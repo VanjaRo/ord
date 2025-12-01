@@ -839,6 +839,7 @@ mod tests {
             amount: Some(1),
             offset: (Some(1), Some(1)),
             height: (None, None),
+            ..default()
           }),
           divisibility: Some(1),
           symbol: Some('$'),
@@ -4584,6 +4585,7 @@ mod tests {
             cap: Some(100),
             height: (None, Some(100)),
             offset: (None, Some(2)),
+            ..default()
           }),
           ..default()
         }),
@@ -4604,6 +4606,7 @@ mod tests {
         height: (None, Some(100)),
         offset: (None, Some(2)),
         cap: Some(100),
+        ..default()
       }),
       timestamp: id.block,
       ..default()
@@ -4676,6 +4679,7 @@ mod tests {
             cap: Some(100),
             height: (None, Some(10)),
             offset: (None, Some(100)),
+            ..default()
           }),
           ..default()
         }),
@@ -4696,6 +4700,7 @@ mod tests {
         height: (None, Some(10)),
         offset: (None, Some(100)),
         cap: Some(100),
+        ..default()
       }),
       timestamp: id.block,
       ..default()
@@ -4768,6 +4773,7 @@ mod tests {
             cap: Some(100),
             height: (Some(11), None),
             offset: (Some(1), None),
+            ..default()
           }),
           ..default()
         }),
@@ -4788,6 +4794,7 @@ mod tests {
         height: (Some(11), None),
         offset: (Some(1), None),
         cap: Some(100),
+        ..default()
       }),
       timestamp: id.block,
       ..default()
@@ -4854,6 +4861,7 @@ mod tests {
             cap: Some(100),
             height: (Some(9), None),
             offset: (Some(3), None),
+            ..default()
           }),
           ..default()
         }),
@@ -4874,6 +4882,7 @@ mod tests {
         height: (Some(9), None),
         offset: (Some(3), None),
         cap: Some(100),
+        ..default()
       }),
       timestamp: id.block,
       ..default()
@@ -6100,6 +6109,7 @@ mod tests {
                 Some((SUBSIDY_HALVING_INTERVAL * 5).into()),
               ),
               offset: (None, None),
+              ..default()
             }),
             timestamp: 0,
             turbo: true,

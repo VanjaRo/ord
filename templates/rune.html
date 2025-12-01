@@ -54,6 +54,35 @@
 %% } else {
   <dd>no</dd>
 %% }
+  <dt>authority</dt>
+  <dd>
+    <dl>
+      <dt>allow minting</dt>
+      <dd>{{ self.authority_flags.as_ref().map(|f| f.allow_minting).unwrap_or(false) }}</dd>
+      <dt>allow blacklisting</dt>
+      <dd>{{ self.authority_flags.as_ref().map(|f| f.allow_blacklisting).unwrap_or(false) }}</dd>
+%% if let Some(supply_extra) = self.supply_extra {
+%%   if supply_extra > 0 {
+        <dt>extra supply</dt>
+        <dd>{{ supply_extra }}</dd>
+%%   }
+%% }
+%% if let Some(minters) = self.minter_count {
+%%   if minters > 0 {
+        <dt>minters</dt>
+        <dd>{{ minters }} <a href=/rune/{{ self.id }}/minters>json</a></dd>
+%%   }
+%% }
+%% if let Some(blacklisted) = self.blacklist_count {
+%%   if blacklisted > 0 {
+        <dt>blacklist entries</dt>
+        <dd>{{ blacklisted }} <a href=/rune/{{ self.id }}/blacklist>json</a></dd>
+%%   }
+%% }
+      <dt>authority scripts</dt>
+      <dd><a href=/rune/{{ self.id }}?authority=true>json</a></dd>
+    </dl>
+  </dd>
   <dt>supply</dt>
   <dd>{{ self.entry.pile(self.entry.supply()) }}</dd>
   <dt>premine</dt>

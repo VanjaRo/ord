@@ -20,6 +20,15 @@ pub(super) enum Tag {
   Divisibility = 1,
   Spacers = 3,
   Symbol = 5,
+
+  SetAuthority = 101,
+  Blacklist = 103,
+  Unblacklist = 105,
+  AddMinter = 107,
+  RemoveMinter = 109,
+  AllowMinting = 111,
+  AllowBlacklisting = 113,
+
   #[allow(unused)]
   Nop = 127,
 }

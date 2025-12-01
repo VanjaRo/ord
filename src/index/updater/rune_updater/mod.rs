@@ -1,4 +1,16 @@
 use super::*;
+use ordinals::{AuthorityBits, AuthorityKind, CompactScript};
+use std::collections::HashMap;
+
+mod allocation;
+mod authority;
+mod cache;
+mod executor;
+
+pub(crate) use authority::AuthorityContextCache;
+pub(super) use cache::ScriptCache;
+
+use self::{allocation::Allocation, authority::Authority, executor::Executor};
 
 pub(super) struct RuneUpdater<'a, 'tx, 'client> {
   pub(super) block_time: u32,
@@ -15,118 +27,129 @@ pub(super) struct RuneUpdater<'a, 'tx, 'client> {
   pub(super) sequence_number_to_rune_id: &'a mut Table<'tx, u32, RuneIdValue>,
   pub(super) statistic_to_count: &'a mut Table<'tx, u64, u64>,
   pub(super) transaction_id_to_rune: &'a mut Table<'tx, &'static TxidValue, u128>,
+  pub(super) rune_id_to_authority_flags: &'a mut Table<'tx, RuneIdValue, u8>,
+  pub(super) rune_id_to_authority_scripts: &'a mut Table<'tx, RuneIdValue, &'static [u8]>,
+  pub(super) rune_id_to_minters: &'a mut MultimapTable<'tx, RuneIdValue, &'static [u8]>,
+  pub(super) rune_id_to_blacklist: &'a mut MultimapTable<'tx, RuneIdValue, &'static [u8]>,
+  pub(super) rune_id_to_supply_extra: &'a mut Table<'tx, RuneIdValue, u128>,
+  pub(super) script_cache: ScriptCache,
+  pub(super) authority_cache: AuthorityContextCache,
 }
 
 impl RuneUpdater<'_, '_, '_> {
   pub(super) fn index_runes(&mut self, tx_index: u32, tx: &Transaction, txid: Txid) -> Result<()> {
     let artifact = Runestone::decipher(tx);
 
-    let mut unallocated = self.unallocated(tx)?;
+    let mut unallocated = {
+      let mut authority = Authority::new(
+        self.client,
+        self.rune_id_to_authority_flags,
+        self.rune_id_to_authority_scripts,
+        self.rune_id_to_minters,
+        self.rune_id_to_blacklist,
+        &mut self.script_cache,
+        self.rune_id_to_supply_extra,
+        &mut self.authority_cache,
+      );
+
+      let mut allocation = Allocation::new(self.outpoint_to_balances);
+      allocation.calculate_unallocated(tx, |id, outpoint| {
+        if let Some(script_pubkey) = authority.script_cache.get_script_pubkey(
+          authority.client,
+          &outpoint.txid,
+          outpoint.vout,
+        )? {
+          authority.is_blacklisted(id, script_pubkey.as_ref())
+        } else {
+          Ok(false)
+        }
+      })?
+    };
 
     let mut allocated: Vec<HashMap<RuneId, Lot>> = vec![HashMap::new(); tx.output.len()];
 
     if let Some(artifact) = &artifact {
-      if let Some(id) = artifact.mint()
-        && let Some(amount) = self.mint(id)?
-      {
-        *unallocated.entry(id).or_default() += amount;
-
-        if let Some(sender) = self.event_sender {
-          sender.blocking_send(Event::RuneMinted {
-            block_height: self.height,
-            txid,
-            rune_id: id,
-            amount: amount.n(),
-          })?;
-        }
-      }
+      self.process_mint(artifact, tx, txid, &mut unallocated)?;
 
       let etched = self.etched(tx_index, tx, artifact)?;
 
+      self.process_premine(artifact, etched, &mut unallocated);
+
       if let Artifact::Runestone(runestone) = artifact {
-        if let Some((id, ..)) = etched {
-          *unallocated.entry(id).or_default() +=
-            runestone.etching.unwrap().premine.unwrap_or_default();
-        }
+        let authority = Authority::new(
+          self.client,
+          self.rune_id_to_authority_flags,
+          self.rune_id_to_authority_scripts,
+          self.rune_id_to_minters,
+          self.rune_id_to_blacklist,
+          &mut self.script_cache,
+          self.rune_id_to_supply_extra,
+          &mut self.authority_cache,
+        );
 
-        for Edict { id, amount, output } in runestone.edicts.iter().copied() {
-          let amount = Lot(amount);
-
-          // edicts with output values greater than the number of outputs
-          // should never be produced by the edict parser
-          let output = usize::try_from(output).unwrap();
-          assert!(output <= tx.output.len());
-
-          let id = if id == RuneId::default() {
-            let Some((id, ..)) = etched else {
-              continue;
-            };
-
-            id
-          } else {
-            id
-          };
-
-          let Some(balance) = unallocated.get_mut(&id) else {
-            continue;
-          };
-
-          let mut allocate = |balance: &mut Lot, amount: Lot, output: usize| {
-            if amount > 0 {
-              *balance -= amount;
-              *allocated[output].entry(id).or_default() += amount;
-            }
-          };
-
-          if output == tx.output.len() {
-            // find non-OP_RETURN outputs
-            let destinations = tx
-              .output
-              .iter()
-              .enumerate()
-              .filter_map(|(output, tx_out)| {
-                (!tx_out.script_pubkey.is_op_return()).then_some(output)
-              })
-              .collect::<Vec<usize>>();
-
-            if !destinations.is_empty() {
-              if amount == 0 {
-                // if amount is zero, divide balance between eligible outputs
-                let amount = *balance / destinations.len() as u128;
-                let remainder = usize::try_from(*balance % destinations.len() as u128).unwrap();
-
-                for (i, output) in destinations.iter().enumerate() {
-                  allocate(
-                    balance,
-                    if i < remainder { amount + 1 } else { amount },
-                    *output,
-                  );
-                }
-              } else {
-                // if amount is non-zero, distribute amount to eligible outputs
-                for output in destinations {
-                  allocate(balance, amount.min(*balance), output);
-                }
-              }
-            }
-          } else {
-            // Get the allocatable amount
-            let amount = if amount == 0 {
-              *balance
-            } else {
-              amount.min(*balance)
-            };
-
-            allocate(balance, amount, output);
-          }
-        }
+        let mut executor = Executor::new(authority);
+        executor.process_runestone(tx, runestone, etched, &mut unallocated, &mut allocated)?;
       }
 
       if let Some((id, rune)) = etched {
-        self.create_rune_entry(txid, artifact, id, rune)?;
+        self.create_rune_entry(txid, artifact, id, rune, tx)?;
       }
     }
 
+    let burned =
+      self.process_cenotaph_and_balances(&artifact, unallocated, &mut allocated, tx, txid)?;
+
+    self.update_burned(burned, txid)?;
+
+    Ok(())
+  }
+
+  fn process_mint(
+    &mut self,
+    artifact: &Artifact,
+    _tx: &Transaction,
+    txid: Txid,
+    unallocated: &mut HashMap<RuneId, Lot>,
+  ) -> Result<()> {
+    if let Some(id) = artifact.mint()
+      && let Some(amount) = self.mint(id)?
+    {
+      *unallocated.entry(id).or_default() += amount;
+
+      if let Some(sender) = self.event_sender {
+        sender.blocking_send(Event::RuneMinted {
+          block_height: self.height,
+          txid,
+          rune_id: id,
+          amount: amount.n(),
+        })?;
+      }
+    }
+    Ok(())
+  }
+
+  fn process_premine(
+    &mut self,
+    artifact: &Artifact,
+    etched: Option<(RuneId, Rune)>,
+    unallocated: &mut HashMap<RuneId, Lot>,
+  ) {
+    if let Artifact::Runestone(runestone) = artifact {
+      if let Some((id, ..)) = etched {
+        *unallocated.entry(id).or_default() +=
+          runestone.etching.unwrap().premine.unwrap_or_default();
+      }
+    }
+  }
+
+  fn process_cenotaph_and_balances(
+    &mut self,
+    artifact: &Option<Artifact>,
+    unallocated: HashMap<RuneId, Lot>,
+    allocated: &mut [HashMap<RuneId, Lot>],
+    tx: &Transaction,
+    txid: Txid,
+  ) -> Result<HashMap<RuneId, Lot>> {
     let mut burned: HashMap<RuneId, Lot> = HashMap::new();
 
     if let Some(Artifact::Cenotaph(_)) = artifact {
@@ -135,6 +158,7 @@ impl RuneUpdater<'_, '_, '_> {
       }
     } else {
       let pointer = artifact
+        .as_ref()
         .map(|artifact| match artifact {
           Artifact::Runestone(runestone) => runestone.pointer,
           Artifact::Cenotaph(_) => unreachable!(),
@@ -145,7 +169,7 @@ impl RuneUpdater<'_, '_, '_> {
       // OP_RETURN output if there is no default
       if let Some(vout) = pointer
         .map(|pointer| pointer.into_usize())
-        .inspect(|&pointer| assert!(pointer < allocated.len()))
+        .filter(|&pointer| pointer < allocated.len())
         .or_else(|| {
           tx.output
             .iter()
@@ -170,14 +194,14 @@ impl RuneUpdater<'_, '_, '_> {
 
     // update outpoint balances
     let mut buffer: Vec<u8> = Vec::new();
-    for (vout, balances) in allocated.into_iter().enumerate() {
+    for (vout, balances) in allocated.iter_mut().enumerate() {
       if balances.is_empty() {
         continue;
       }
 
       // increment burned balances
       if tx.output[vout].script_pubkey.is_op_return() {
-        for (id, balance) in &balances {
+        for (id, balance) in balances.iter() {
           *burned.entry(*id).or_default() += *balance;
         }
         continue;
@@ -185,7 +209,7 @@ impl RuneUpdater<'_, '_, '_> {
 
       buffer.clear();
 
-      let mut balances = balances.into_iter().collect::<Vec<(RuneId, Lot)>>();
+      let mut balances = balances.drain().collect::<Vec<(RuneId, Lot)>>();
 
       // Sort balances by id so tests can assert balances in a fixed order
       balances.sort();
@@ -214,7 +238,10 @@ impl RuneUpdater<'_, '_, '_> {
         .insert(&outpoint.store(), buffer.as_slice())?;
     }
 
-    // increment entries with burned runes
+    Ok(burned)
+  }
+
+  fn update_burned(&mut self, burned: HashMap<RuneId, Lot>, txid: Txid) -> Result<()> {
     for (id, amount) in burned {
       *self.burned.entry(id).or_default() += amount;
 
@@ -227,7 +254,6 @@ impl RuneUpdater<'_, '_, '_> {
         })?;
       }
     }
-
     Ok(())
   }
 
@@ -247,6 +273,7 @@ impl RuneUpdater<'_, '_, '_> {
     artifact: &Artifact,
     id: RuneId,
     rune: Rune,
+    tx: &Transaction,
   ) -> Result {
     self.rune_to_id.insert(rune.store(), id.store())?;
     self
@@ -285,6 +312,79 @@ impl RuneUpdater<'_, '_, '_> {
           turbo,
           ..
         } = etching.unwrap();
+
+        let allow_minting = terms.map(|t| t.allow_minting).unwrap_or(false);
+        let allow_blacklisting = terms.map(|t| t.allow_blacklisting).unwrap_or(false);
+
+        let mut flags = AuthorityBits::empty().extend(AuthorityKind::Master);
+        if allow_minting {
+          flags.insert(AuthorityKind::Mint);
+        }
+
+        if allow_blacklisting {
+          flags.insert(AuthorityKind::Blacklist);
+        }
+
+        // Capture authority scripts (always store master if compression succeeds)
+        let mut authority_script: Option<ScriptBuf> = None;
+
+        if let Some(input) = tx.input.first() {
+          if let Some(script_pubkey) = self.script_cache.get_script_pubkey(
+            self.client,
+            &input.previous_output.txid,
+            input.previous_output.vout,
+          )? {
+            authority_script = Some(script_pubkey.as_ref().clone());
+          }
+        }
+
+        if authority_script.is_none() {
+          if let Some(output) = tx
+            .output
+            .iter()
+            .find(|out| !out.script_pubkey.is_op_return())
+          {
+            authority_script = Some(output.script_pubkey.clone());
+          }
+        }
+
+        self
+          .rune_id_to_authority_flags
+          .insert(id.store(), flags.bits())?;
+
+        if let Some(script_pubkey) = authority_script {
+          if let Some(compact) = CompactScript::try_from_script(&script_pubkey) {
+            let mut scripts_blob = Vec::new();
+            scripts_blob.push(flags.bits());
+
+            if flags.contains(AuthorityKind::Mint) {
+              scripts_blob.push(compact.kind as u8);
+              scripts_blob.push(compact.body.len() as u8);
+              scripts_blob.extend(&compact.body);
+            }
+
+            if flags.contains(AuthorityKind::Blacklist) {
+              scripts_blob.push(compact.kind as u8);
+              scripts_blob.push(compact.body.len() as u8);
+              scripts_blob.extend(&compact.body);
+            }
+
+            // Master minter (creator) - always present
+            scripts_blob.push(compact.kind as u8);
+            scripts_blob.push(compact.body.len() as u8);
+            scripts_blob.extend(&compact.body);
+
+            self
+              .rune_id_to_authority_scripts
+              .insert(id.store(), scripts_blob.as_slice())?;
+          } else {
+            log::warn!(
+              "Skipping authority capture for {:?}: unsupported script {:?}",
+              id,
+              script_pubkey
+            );
+          }
+        }
 
         RuneEntry {
           block: id.block,
@@ -348,11 +448,12 @@ impl RuneUpdater<'_, '_, '_> {
     };
 
     let rune = if let Some(rune) = rune {
-      if rune < self.minimum
-        || rune.is_reserved()
-        || self.rune_to_id.get(rune.0)?.is_some()
-        || !self.tx_commits_to_rune(tx, rune)?
-      {
+      let too_low = rune < self.minimum;
+      let reserved = rune.is_reserved();
+      let already = self.rune_to_id.get(rune.0)?.is_some();
+      let commits = self.tx_commits_to_rune(tx, rune)?;
+
+      if too_low || reserved || already || !commits {
         return Ok(None);
       }
       rune
@@ -399,7 +500,7 @@ impl RuneUpdater<'_, '_, '_> {
     Ok(Some(Lot(amount)))
   }
 
-  fn tx_commits_to_rune(&self, tx: &Transaction, rune: Rune) -> Result<bool> {
+  fn tx_commits_to_rune(&mut self, tx: &Transaction, rune: Rune) -> Result<bool> {
     let commitment = rune.commitment();
 
     for input in &tx.input {
@@ -412,9 +513,7 @@ impl RuneUpdater<'_, '_, '_> {
 
       for instruction in tapscript.instructions() {
         // ignore errors, since the extracted script may not be valid
-        let Ok(instruction) = instruction else {
-          break;
-        };
+        let Ok(instruction) = instruction else { break };
 
         let Some(pushbytes) = instruction.push_bytes() else {
           continue;
@@ -424,10 +523,11 @@ impl RuneUpdater<'_, '_, '_> {
           continue;
         }
 
-        let Some(tx_info) = self
-          .client
-          .get_raw_transaction_info(&input.previous_output.txid, None)
-          .into_option()?
+        let Some(script_pubkey) = self.script_cache.get_script_pubkey(
+          self.client,
+          &input.previous_output.txid,
+          input.previous_output.vout,
+        )?
         else {
           panic!(
             "can't get input transaction: {}",
@@ -435,14 +535,20 @@ impl RuneUpdater<'_, '_, '_> {
           );
         };
 
-        let taproot = tx_info.vout[input.previous_output.vout.into_usize()]
-          .script_pub_key
-          .script()?
-          .is_p2tr();
+        let taproot = script_pubkey.as_ref().is_p2tr();
 
         if !taproot {
           continue;
         }
+
+        // Need full tx_info for blockhash
+        let Some(tx_info) = self
+          .client
+          .get_raw_transaction_info(&input.previous_output.txid, None)
+          .into_option()?
+        else {
+          continue;
+        };
 
         let commit_tx_height = self
           .client
@@ -464,28 +570,5 @@ impl RuneUpdater<'_, '_, '_> {
     }
 
     Ok(false)
-  }
-
-  fn unallocated(&mut self, tx: &Transaction) -> Result<HashMap<RuneId, Lot>> {
-    // map of rune ID to un-allocated balance of that rune
-    let mut unallocated: HashMap<RuneId, Lot> = HashMap::new();
-
-    // increment unallocated runes with the runes in tx inputs
-    for input in &tx.input {
-      if let Some(guard) = self
-        .outpoint_to_balances
-        .remove(&input.previous_output.store())?
-      {
-        let buffer = guard.value();
-        let mut i = 0;
-        while i < buffer.len() {
-          let ((id, balance), len) = Index::decode_rune_balance(&buffer[i..]).unwrap();
-          i += len;
-          *unallocated.entry(id).or_default() += balance;
-        }
-      }
-    }
-
-    Ok(unallocated)
   }
 }

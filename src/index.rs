@@ -68,6 +68,11 @@ define_table! { OUTPOINT_TO_RUNE_BALANCES, &OutPointValue, &[u8] }
 define_table! { OUTPOINT_TO_UTXO_ENTRY, &OutPointValue, &UtxoEntry }
 define_table! { RUNE_ID_TO_RUNE_ENTRY, RuneIdValue, RuneEntryValue }
 define_table! { RUNE_TO_RUNE_ID, u128, RuneIdValue }
+define_table! { RUNE_ID_TO_AUTHORITY_FLAGS, RuneIdValue, u8 }
+define_table! { RUNE_ID_TO_AUTHORITY_SCRIPTS, RuneIdValue, &[u8] }
+define_multimap_table! { RUNE_ID_TO_MINTERS, RuneIdValue, &[u8] }
+define_multimap_table! { RUNE_ID_TO_BLACKLIST, RuneIdValue, &[u8] }
+define_table! { RUNE_ID_TO_SUPPLY_EXTRA, RuneIdValue, u128 }
 define_table! { SAT_TO_SATPOINT, u64, &SatPointValue }
 define_table! { SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY, u32, InscriptionEntryValue }
 define_table! { SEQUENCE_NUMBER_TO_RUNE_ID, u32, RuneIdValue }
@@ -273,7 +278,7 @@ impl Index {
     {
       Ok(database) => {
         {
-          let schema_version = database
+          let mut schema_version = database
             .begin_read()?
             .open_table(STATISTIC_TO_COUNT)?
             .get(&Statistic::Schema.key())?
@@ -281,10 +286,19 @@ impl Index {
             .unwrap_or(0);
 
           match schema_version.cmp(&SCHEMA_VERSION) {
-            cmp::Ordering::Less => bail!(
-              "index at `{}` appears to have been built with an older, incompatible version of ord, consider deleting and rebuilding the index: index schema {schema_version}, ord schema {SCHEMA_VERSION}",
-              path.display()
-            ),
+            cmp::Ordering::Less => {
+              if schema_version == 30 {
+                Self::migrate_schema_30_to_31(&database)?;
+                schema_version = SCHEMA_VERSION;
+              }
+
+              if schema_version != SCHEMA_VERSION {
+                bail!(
+                  "index at `{}` appears to have been built with an older, incompatible version of ord, consider deleting and rebuilding the index: index schema {schema_version}, ord schema {SCHEMA_VERSION}",
+                  path.display()
+                );
+              }
+            }
             cmp::Ordering::Greater => bail!(
               "index at `{}` appears to have been built with a newer, incompatible version of ord, consider updating ord: index schema {schema_version}, ord schema {SCHEMA_VERSION}",
               path.display()
@@ -295,7 +309,13 @@ impl Index {
 
         let tx = database.begin_write()?;
 
+        // Ensure all tables exist (including new ones for migration)
         tx.open_table(NUMBER_TO_OFFER)?;
+        tx.open_table(RUNE_ID_TO_AUTHORITY_FLAGS)?;
+        tx.open_table(RUNE_ID_TO_AUTHORITY_SCRIPTS)?;
+        tx.open_multimap_table(RUNE_ID_TO_MINTERS)?;
+        tx.open_multimap_table(RUNE_ID_TO_BLACKLIST)?;
+        tx.open_table(RUNE_ID_TO_SUPPLY_EXTRA)?;
 
         tx.commit()?;
 
@@ -328,6 +348,11 @@ impl Index {
         tx.open_table(OUTPOINT_TO_UTXO_ENTRY)?;
         tx.open_table(RUNE_ID_TO_RUNE_ENTRY)?;
         tx.open_table(RUNE_TO_RUNE_ID)?;
+        tx.open_table(RUNE_ID_TO_AUTHORITY_FLAGS)?;
+        tx.open_table(RUNE_ID_TO_AUTHORITY_SCRIPTS)?;
+        tx.open_multimap_table(RUNE_ID_TO_MINTERS)?;
+        tx.open_multimap_table(RUNE_ID_TO_BLACKLIST)?;
+        tx.open_table(RUNE_ID_TO_SUPPLY_EXTRA)?;
         tx.open_table(SAT_TO_SATPOINT)?;
         tx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY)?;
         tx.open_table(SEQUENCE_NUMBER_TO_RUNE_ID)?;
@@ -399,6 +424,7 @@ impl Index {
                   Some((SUBSIDY_HALVING_INTERVAL * 5).into()),
                 ),
                 offset: (None, None),
+                ..default()
               }),
               mints: 0,
               number: 0,
@@ -1002,6 +1028,329 @@ impl Index {
       .then_some(parent);
 
     Ok(Some((RuneId::load(id), entry, parent)))
+  }
+
+  #[allow(dead_code)]
+  pub(crate) fn get_authority_flags(
+    &self,
+    rune_id: RuneId,
+  ) -> Result<Option<ordinals::AuthorityBits>> {
+    let rtx = self.database.begin_read()?;
+    Ok(
+      rtx
+        .open_table(RUNE_ID_TO_AUTHORITY_FLAGS)?
+        .get(rune_id.store())?
+        .map(|guard| ordinals::AuthorityBits::from(guard.value())),
+    )
+  }
+
+  pub(crate) fn get_authority_script(
+    &self,
+    rune_id: RuneId,
+    authority_type: ordinals::AuthorityKind, // 0=mint, 1=blacklist, 2=master_minter
+  ) -> Result<Option<ordinals::CompactScript>> {
+    use ordinals::{AuthorityBits, AuthorityKind, CompactScript, CompactScriptKind};
+
+    let rtx = self.database.begin_read()?;
+    let Some(scripts_blob) = rtx
+      .open_table(RUNE_ID_TO_AUTHORITY_SCRIPTS)?
+      .get(rune_id.store())?
+      .map(|e| e.value().to_vec())
+    else {
+      return Ok(None);
+    };
+
+    if scripts_blob.is_empty() {
+      return Ok(None);
+    }
+
+    let presence = AuthorityBits::from(scripts_blob[0]);
+    if !presence.contains(authority_type) {
+      return Ok(None);
+    }
+
+    // Decode scripts: [presence, mint_script?, blacklist_script?, master_minter_script?]
+    let mut offset = 1;
+
+    for kind in [
+      AuthorityKind::Mint,
+      AuthorityKind::Blacklist,
+      AuthorityKind::Master,
+    ] {
+      if presence.contains(kind) {
+        if offset + 2 > scripts_blob.len() {
+          return Ok(None);
+        }
+
+        let compact_kind = match scripts_blob[offset] {
+          0 => CompactScriptKind::P2TR,
+          1 => CompactScriptKind::P2WPKH,
+          2 => CompactScriptKind::P2WSH,
+          _ => return Ok(None),
+        };
+
+        let body_len = scripts_blob[offset + 1] as usize;
+        if body_len == 0 || body_len > 32 || offset + 2 + body_len > scripts_blob.len() {
+          log::warn!(
+            "Invalid authority encoding for {:?} ({:?}): body_len={}",
+            rune_id,
+            kind,
+            body_len
+          );
+          return Ok(None);
+        }
+
+        if kind == authority_type {
+          return Ok(Some(CompactScript {
+            kind: compact_kind,
+            body: scripts_blob[offset + 2..offset + 2 + body_len].to_vec(),
+          }));
+        }
+
+        offset += 2 + body_len;
+      }
+    }
+
+    Ok(None)
+  }
+
+  pub(crate) fn get_minter_count(&self, rune_id: RuneId) -> Result<u32> {
+    let rtx = self.database.begin_read()?;
+    let minters = rtx.open_multimap_table(RUNE_ID_TO_MINTERS)?;
+    let count = minters.get(rune_id.store())?.count();
+    Ok(count.try_into().unwrap_or(0))
+  }
+
+  pub(crate) fn get_minters_paginated(
+    &self,
+    rune_id: RuneId,
+    page: usize,
+    page_size: usize,
+  ) -> Result<(Vec<ordinals::CompactScript>, bool)> {
+    self.page_compact_scripts(RUNE_ID_TO_MINTERS, rune_id, page, page_size)
+  }
+
+  pub(crate) fn get_blacklist_paginated(
+    &self,
+    rune_id: RuneId,
+    page: usize,
+    page_size: usize,
+  ) -> Result<(Vec<ordinals::CompactScript>, bool)> {
+    self.page_compact_scripts(RUNE_ID_TO_BLACKLIST, rune_id, page, page_size)
+  }
+
+  pub(crate) fn get_blacklist_count(&self, rune_id: RuneId) -> Result<u32> {
+    let rtx = self.database.begin_read()?;
+    let blacklist = rtx.open_multimap_table(RUNE_ID_TO_BLACKLIST)?;
+    let count = blacklist.get(rune_id.store())?.count();
+    Ok(count.try_into().unwrap_or(0))
+  }
+
+  pub(crate) fn get_supply_extra(&self, rune_id: RuneId) -> Result<Option<u128>> {
+    let rtx = self.database.begin_read()?;
+    Ok(
+      rtx
+        .open_table(RUNE_ID_TO_SUPPLY_EXTRA)?
+        .get(rune_id.store())?
+        .map(|guard| guard.value()),
+    )
+  }
+
+  fn decode_compact_script(entry_bytes: &[u8]) -> Option<ordinals::CompactScript> {
+    if entry_bytes.is_empty() {
+      return None;
+    }
+
+    let kind = match entry_bytes[0] {
+      0 => ordinals::CompactScriptKind::P2TR,
+      1 => ordinals::CompactScriptKind::P2WPKH,
+      2 => ordinals::CompactScriptKind::P2WSH,
+      _ => return None,
+    };
+
+    let body = &entry_bytes[1..];
+    if body.is_empty() || body.len() > 32 {
+      log::warn!(
+        "Skipping malformed compact script entry (kind {:?}): body_len={}",
+        kind,
+        body.len()
+      );
+      return None;
+    }
+
+    Some(ordinals::CompactScript {
+      kind,
+      body: body.to_vec(),
+    })
+  }
+
+  fn page_compact_scripts(
+    &self,
+    table_def: MultimapTableDefinition<RuneIdValue, &[u8]>,
+    rune_id: RuneId,
+    page: usize,
+    page_size: usize,
+  ) -> Result<(Vec<ordinals::CompactScript>, bool)> {
+    let start = page.saturating_mul(page_size);
+
+    let rtx = self.database.begin_read()?;
+    let table = rtx.open_multimap_table(table_def)?;
+    let mut iter = table.get(rune_id.store())?.skip(start);
+
+    let mut scripts = Vec::new();
+    let mut more = false;
+
+    for (i, entry) in iter.by_ref().enumerate() {
+      if i >= page_size {
+        more = true;
+        break;
+      }
+
+      let entry = entry?;
+      if let Some(compact) = Self::decode_compact_script(entry.value()) {
+        scripts.push(compact);
+      }
+    }
+
+    // If there is at least one more entry remaining, mark `more`
+    if !more {
+      more = iter.next().transpose()?.is_some();
+    }
+
+    Ok((scripts, more))
+  }
+
+  fn migrate_schema_30_to_31(database: &Database) -> Result<()> {
+    type OldTermsEntryValue = (
+      Option<u128>,               // cap
+      (Option<u64>, Option<u64>), // height
+      Option<u128>,               // amount
+      (Option<u64>, Option<u64>), // offset
+    );
+
+    type OldRuneEntryValue = (
+      u64,                        // block
+      u128,                       // burned
+      u8,                         // divisibility
+      (u128, u128),               // etching
+      u128,                       // mints
+      u64,                        // number
+      u128,                       // premine
+      (u128, u32),                // spaced rune
+      Option<char>,               // symbol
+      Option<OldTermsEntryValue>, // terms
+      u64,                        // timestamp
+      bool,                       // turbo
+    );
+
+    let tx = database.begin_write()?;
+
+    // Create new tables if they don't exist
+    tx.open_table(RUNE_ID_TO_AUTHORITY_FLAGS)?;
+    tx.open_table(RUNE_ID_TO_AUTHORITY_SCRIPTS)?;
+    tx.open_multimap_table(RUNE_ID_TO_MINTERS)?;
+    tx.open_multimap_table(RUNE_ID_TO_BLACKLIST)?;
+    tx.open_table(RUNE_ID_TO_SUPPLY_EXTRA)?;
+
+    let old_entry_def: TableDefinition<RuneIdValue, OldRuneEntryValue> =
+      TableDefinition::new("RUNE_ID_TO_RUNE_ENTRY");
+
+    let mut updates: Vec<(RuneIdValue, RuneEntryValue)> = Vec::new();
+
+    {
+      let table = tx.open_table(old_entry_def)?;
+
+      for result in table.iter()? {
+        let (key, value) = result?;
+        let rune_id = key.value();
+        let (
+          block,
+          burned,
+          divisibility,
+          etching,
+          mints,
+          number,
+          premine,
+          (rune, spacers),
+          symbol,
+          old_terms,
+          timestamp,
+          turbo,
+        ) = value.value();
+
+        let etching = {
+          let low = etching.0.to_le_bytes();
+          let high = etching.1.to_le_bytes();
+          Txid::from_byte_array([
+            low[0], low[1], low[2], low[3], low[4], low[5], low[6], low[7], low[8], low[9],
+            low[10], low[11], low[12], low[13], low[14], low[15], high[0], high[1], high[2],
+            high[3], high[4], high[5], high[6], high[7], high[8], high[9], high[10], high[11],
+            high[12], high[13], high[14], high[15],
+          ])
+        };
+
+        let mut terms = old_terms.map(|(cap, height, amount, offset)| Terms {
+          cap,
+          height,
+          amount,
+          offset,
+          allow_minting: false,
+          allow_blacklisting: false,
+        });
+
+        let flags = tx
+          .open_table(RUNE_ID_TO_AUTHORITY_FLAGS)?
+          .get(rune_id)?
+          .map(|f| f.value())
+          .unwrap_or(0);
+
+        let bits = ordinals::AuthorityBits::from(flags);
+        let allow_minting = bits.contains(ordinals::AuthorityKind::Mint);
+        let allow_blacklisting = bits.contains(ordinals::AuthorityKind::Blacklist);
+
+        if allow_minting || allow_blacklisting {
+          let mut updated_terms = terms.unwrap_or_default();
+          updated_terms.allow_minting |= allow_minting;
+          updated_terms.allow_blacklisting |= allow_blacklisting;
+          terms = Some(updated_terms);
+        }
+
+        let entry = RuneEntry {
+          block,
+          burned,
+          divisibility,
+          etching,
+          mints,
+          number,
+          premine,
+          spaced_rune: SpacedRune {
+            rune: Rune(rune),
+            spacers,
+          },
+          symbol,
+          terms,
+          timestamp,
+          turbo,
+        };
+
+        updates.push((rune_id, entry.store()));
+      }
+    }
+
+    {
+      let mut table = tx.open_table(RUNE_ID_TO_RUNE_ENTRY)?;
+      for (key, value) in updates {
+        table.insert(key, value)?;
+      }
+    }
+
+    {
+      let mut statistics = tx.open_table(STATISTIC_TO_COUNT)?;
+      Self::set_statistic(&mut statistics, Statistic::Schema, SCHEMA_VERSION)?;
+    }
+
+    tx.commit()?;
+    Ok(())
   }
 
   pub fn runes(&self) -> Result<Vec<(RuneId, RuneEntry)>> {

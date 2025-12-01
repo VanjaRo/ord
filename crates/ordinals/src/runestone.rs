@@ -10,6 +10,46 @@ pub struct Runestone {
   pub etching: Option<Etching>,
   pub mint: Option<RuneId>,
   pub pointer: Option<u32>,
+  pub set_authority: Option<SetAuthority>,
+  pub authority: Option<AuthorityUpdates>,
+}
+
+#[derive(Default, Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct AuthorityUpdates {
+  pub blacklist: Option<Vec<Vec<u8>>>,
+  pub unblacklist: Option<Vec<Vec<u8>>>,
+  pub add_minter: Option<Vec<Vec<u8>>>,
+  pub remove_minter: Option<Vec<Vec<u8>>>,
+}
+
+impl AuthorityUpdates {
+  fn from_lists(
+    blacklist: Option<Vec<Vec<u8>>>,
+    unblacklist: Option<Vec<Vec<u8>>>,
+    add_minter: Option<Vec<Vec<u8>>>,
+    remove_minter: Option<Vec<Vec<u8>>>,
+  ) -> Option<Self> {
+    if blacklist.is_none()
+      && unblacklist.is_none()
+      && add_minter.is_none()
+      && remove_minter.is_none()
+    {
+      None
+    } else {
+      Some(Self {
+        blacklist,
+        unblacklist,
+        add_minter,
+        remove_minter,
+      })
+    }
+  }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct SetAuthority {
+  pub authorities: AuthorityBits,
+  pub script_pubkey_compact: Vec<u8>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -51,6 +91,41 @@ impl Runestone {
       .take(&mut fields, |[flags]| Some(flags))
       .unwrap_or_default();
 
+    // Terms gate authority booleans; they are not standalone flags.
+    let has_terms_flag = Flag::Terms.take(&mut flags);
+
+    let mut terms = has_terms_flag.then(|| Terms {
+      cap: Tag::Cap.take(&mut fields, |[cap]| Some(cap)),
+      height: (
+        Tag::HeightStart.take(&mut fields, |[start_height]| {
+          u64::try_from(start_height).ok()
+        }),
+        Tag::HeightEnd.take(&mut fields, |[start_height]| {
+          u64::try_from(start_height).ok()
+        }),
+      ),
+      amount: Tag::Amount.take(&mut fields, |[amount]| Some(amount)),
+      offset: (
+        Tag::OffsetStart.take(&mut fields, |[start_offset]| {
+          u64::try_from(start_offset).ok()
+        }),
+        Tag::OffsetEnd.take(&mut fields, |[end_offset]| u64::try_from(end_offset).ok()),
+      ),
+      ..default()
+    });
+
+    if let Some(existing_terms) = terms.as_mut() {
+      let allow_minting = Tag::AllowMinting
+        .take(&mut fields, |[flag]| Some(flag != 0))
+        .unwrap_or(false);
+      let allow_blacklisting = Tag::AllowBlacklisting
+        .take(&mut fields, |[flag]| Some(flag != 0))
+        .unwrap_or(false);
+
+      existing_terms.allow_minting |= allow_minting;
+      existing_terms.allow_blacklisting |= allow_blacklisting;
+    }
+
     let etching = Flag::Etching.take(&mut flags).then(|| Etching {
       divisibility: Tag::Divisibility.take(&mut fields, |[divisibility]| {
         let divisibility = u8::try_from(divisibility).ok()?;
@@ -65,24 +140,7 @@ impl Runestone {
       symbol: Tag::Symbol.take(&mut fields, |[symbol]| {
         char::from_u32(u32::try_from(symbol).ok()?)
       }),
-      terms: Flag::Terms.take(&mut flags).then(|| Terms {
-        cap: Tag::Cap.take(&mut fields, |[cap]| Some(cap)),
-        height: (
-          Tag::HeightStart.take(&mut fields, |[start_height]| {
-            u64::try_from(start_height).ok()
-          }),
-          Tag::HeightEnd.take(&mut fields, |[start_height]| {
-            u64::try_from(start_height).ok()
-          }),
-        ),
-        amount: Tag::Amount.take(&mut fields, |[amount]| Some(amount)),
-        offset: (
-          Tag::OffsetStart.take(&mut fields, |[start_offset]| {
-            u64::try_from(start_offset).ok()
-          }),
-          Tag::OffsetEnd.take(&mut fields, |[end_offset]| u64::try_from(end_offset).ok()),
-        ),
-      }),
+      terms,
       turbo: Flag::Turbo.take(&mut flags),
     });
 
@@ -94,6 +152,95 @@ impl Runestone {
       let pointer = u32::try_from(pointer).ok()?;
       (u64::from(pointer) < u64::try_from(transaction.output.len()).unwrap()).then_some(pointer)
     });
+
+    // Parse SetAuthority tag (odd tag 101)
+    // Format: [authority_bits, script_len, script_bytes...]
+    // authority_bits: 3 LSB bits (bit0=Mint, bit1=Blacklist, bit2=Master)
+    let mut set_authority = None;
+    if let Some(values) = fields.get(&Tag::SetAuthority.into()) {
+      if values.len() >= 2 {
+        let authorities = u8::try_from(*values.get(0)?)
+          .ok()
+          .map(AuthorityBits::from)?;
+        let script_len = usize::try_from(*values.get(1)?).ok()?;
+        if script_len <= 32 && values.len() >= 2 + script_len {
+          let script_bytes: Vec<u8> = values
+            .iter()
+            .skip(2)
+            .take(script_len)
+            .filter_map(|v| u8::try_from(*v).ok())
+            .collect();
+          if script_bytes.len() == script_len {
+            set_authority = Some(SetAuthority {
+              authorities,
+              script_pubkey_compact: script_bytes,
+            });
+            // Remove the consumed values
+            fields.remove(&Tag::SetAuthority.into());
+          }
+        }
+      }
+    }
+
+    // Parse list tags (odd tags): Blacklist, Unblacklist, AddMinter, RemoveMinter
+    // Each entry is a compact script: [kind, body_len, body_bytes...]
+    const MAX_LIST_SIZE: usize = 1000; // Limit to prevent DoS
+
+    let mut parse_list = |tag: Tag| -> Option<Vec<Vec<u8>>> {
+      let mut result = Vec::new();
+      if let Some(values) = fields.get(&tag.into()) {
+        let mut i = 0;
+        while i < values.len() && result.len() < MAX_LIST_SIZE {
+          if i + 2 > values.len() {
+            break;
+          }
+          let Some(kind_value) = values.get(i) else {
+            break;
+          };
+          let Some(kind) = u8::try_from(*kind_value).ok() else {
+            break;
+          };
+          let Some(body_len_value) = values.get(i + 1) else {
+            break;
+          };
+          let Some(body_len) = usize::try_from(*body_len_value).ok() else {
+            break;
+          };
+          if body_len > 32 || i + 2 + body_len > values.len() {
+            break;
+          }
+          let body: Vec<u8> = values
+            .iter()
+            .skip(i + 2)
+            .take(body_len)
+            .filter_map(|v| u8::try_from(*v).ok())
+            .collect();
+          if body.len() == body_len {
+            // Store as [kind, body...]
+            let mut encoded = vec![kind];
+            encoded.extend(&body);
+            result.push(encoded);
+            i += 2 + body_len;
+          } else {
+            break;
+          }
+        }
+        if !result.is_empty() {
+          fields.remove(&tag.into());
+        }
+      }
+      if result.is_empty() {
+        None
+      } else {
+        Some(result)
+      }
+    };
+
+    let blacklist = parse_list(Tag::Blacklist);
+    let unblacklist = parse_list(Tag::Unblacklist);
+    let add_minter = parse_list(Tag::AddMinter);
+    let remove_minter = parse_list(Tag::RemoveMinter);
+    let authority = AuthorityUpdates::from_lists(blacklist, unblacklist, add_minter, remove_minter);
 
     if etching
       .map(|etching| etching.supply().is_none())
@@ -123,6 +270,8 @@ impl Runestone {
       etching,
       mint,
       pointer,
+      set_authority,
+      authority,
     }))
   }
 
@@ -156,6 +305,12 @@ impl Runestone {
         Tag::HeightEnd.encode_option(terms.height.1, &mut payload);
         Tag::OffsetStart.encode_option(terms.offset.0, &mut payload);
         Tag::OffsetEnd.encode_option(terms.offset.1, &mut payload);
+        if terms.allow_minting {
+          Tag::AllowMinting.encode([1], &mut payload);
+        }
+        if terms.allow_blacklisting {
+          Tag::AllowBlacklisting.encode([1], &mut payload);
+        }
       }
     }
 
@@ -164,6 +319,43 @@ impl Runestone {
     }
 
     Tag::Pointer.encode_option(self.pointer, &mut payload);
+
+    // Encode SetAuthority tag (odd tag 101)
+    if let Some(set_authority) = &self.set_authority {
+      Tag::SetAuthority.encode([u128::from(set_authority.authorities.bits())], &mut payload);
+      Tag::SetAuthority.encode(
+        [set_authority.script_pubkey_compact.len() as u128],
+        &mut payload,
+      );
+      for byte in &set_authority.script_pubkey_compact {
+        Tag::SetAuthority.encode([(*byte).into()], &mut payload);
+      }
+    }
+
+    // Encode list tags (odd tags)
+    let mut encode_list = |tag: Tag, list: &Option<Vec<Vec<u8>>>| {
+      if let Some(list) = list {
+        for entry in list {
+          // Each entry is [kind, body...] where body is ≤32 bytes
+          if entry.len() >= 1 {
+            let kind = entry[0];
+            let body = &entry[1..];
+            tag.encode([kind.into()], &mut payload);
+            tag.encode([body.len() as u128], &mut payload);
+            for byte in body {
+              tag.encode([(*byte).into()], &mut payload);
+            }
+          }
+        }
+      }
+    };
+
+    if let Some(authority) = &self.authority {
+      encode_list(Tag::Blacklist, &authority.blacklist);
+      encode_list(Tag::Unblacklist, &authority.unblacklist);
+      encode_list(Tag::AddMinter, &authority.add_minter);
+      encode_list(Tag::RemoveMinter, &authority.remove_minter);
+    }
 
     if !self.edicts.is_empty() {
       varint::encode_to_vec(Tag::Body.into(), &mut payload);
@@ -1126,11 +1318,14 @@ mod tests {
             offset: (None, Some(2)),
             amount: Some(3),
             height: (None, None),
+            ..default()
           }),
           turbo: true,
         }),
         pointer: Some(0),
         mint: Some(RuneId::new(1, 1).unwrap()),
+        set_authority: None,
+        authority: None,
       }),
     );
   }
@@ -1439,6 +1634,7 @@ mod tests {
           amount: Some(u64::MAX.into()),
           offset: (Some(u32::MAX.into()), Some(u32::MAX.into())),
           height: (Some(u32::MAX.into()), Some(u32::MAX.into())),
+          ..default()
         }),
         turbo: true,
         premine: Some(u64::MAX.into()),
@@ -1711,11 +1907,14 @@ mod tests {
             height: (Some(12), Some(13)),
             amount: Some(14),
             offset: (Some(15), Some(16)),
+            ..default()
           }),
           turbo: true,
         }),
         mint: Some(RuneId::new(17, 18).unwrap()),
         pointer: Some(0),
+        set_authority: None,
+        authority: None,
       },
       &[
         Tag::Flags.into(),
@@ -1970,6 +2169,7 @@ mod tests {
             amount: Some(u128::MAX),
             height: (None, None),
             offset: (None, None),
+            ..default()
           }),
           ..default()
         }),

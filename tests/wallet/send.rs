@@ -1069,6 +1069,8 @@ fn sending_rune_with_divisibility_works() {
         symbol: '¢',
         terms: None,
         turbo: false,
+        allow_minting: None,
+        allow_blacklisting: None,
       }),
       inscriptions: vec![batch::Entry {
         file: Some("inscription.jpeg".into()),
@@ -1281,6 +1283,8 @@ fn sending_rune_creates_transaction_with_expected_runestone() {
         output: 2
       }],
       mint: None,
+      set_authority: None,
+      authority: None,
     }),
   );
 }

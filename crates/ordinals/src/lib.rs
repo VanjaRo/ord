@@ -23,10 +23,27 @@ use {
 };
 
 pub use {
-  artifact::Artifact, cenotaph::Cenotaph, charm::Charm, decimal_sat::DecimalSat, degree::Degree,
-  edict::Edict, epoch::Epoch, etching::Etching, flaw::Flaw, height::Height, pile::Pile,
-  rarity::Rarity, rune::Rune, rune_id::RuneId, runestone::Runestone, sat::Sat, sat_point::SatPoint,
-  spaced_rune::SpacedRune, terms::Terms,
+  artifact::Artifact,
+  authority::{AuthorityBits, AuthorityKind},
+  cenotaph::Cenotaph,
+  charm::Charm,
+  compact_script::{CompactScript, CompactScriptKind},
+  decimal_sat::DecimalSat,
+  degree::Degree,
+  edict::Edict,
+  epoch::Epoch,
+  etching::Etching,
+  flaw::Flaw,
+  height::Height,
+  pile::Pile,
+  rarity::Rarity,
+  rune::Rune,
+  rune_id::RuneId,
+  runestone::{AuthorityUpdates, Runestone, SetAuthority},
+  sat::Sat,
+  sat_point::SatPoint,
+  spaced_rune::SpacedRune,
+  terms::Terms,
 };
 
 pub const COIN_VALUE: u64 = 100_000_000;
@@ -37,8 +54,10 @@ fn default<T: Default>() -> T {
 }
 
 mod artifact;
+mod authority;
 mod cenotaph;
 mod charm;
+mod compact_script;
 mod decimal_sat;
 mod degree;
 mod edict;

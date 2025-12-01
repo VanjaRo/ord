@@ -48,6 +48,8 @@ mod r;
 mod server_config;
 
 const MEBIBYTE: usize = 1 << 20;
+const AUTHORITY_PAGE_LIMIT: usize = 100;
+const AUTHORITY_PAGE_DEFAULT: usize = 20;
 
 enum SpawnConfig {
   Https(AxumAcceptor),
@@ -59,6 +61,20 @@ enum SpawnConfig {
 pub(crate) struct OutputsQuery {
   #[serde(rename = "type")]
   pub(crate) ty: Option<OutputType>,
+}
+
+#[derive(Default, Deserialize)]
+pub(crate) struct RuneAuthorityQuery {
+  #[serde(default)]
+  pub(crate) authority: bool,
+  #[serde(default)]
+  pub(crate) page: Option<usize>,
+  #[serde(default)]
+  pub(crate) minter_page: Option<usize>,
+  #[serde(default)]
+  pub(crate) blacklist_page: Option<usize>,
+  #[serde(default)]
+  pub(crate) page_size: Option<usize>,
 }
 
 #[derive(Clone, Copy, Deserialize, Default, PartialEq)]
@@ -249,6 +265,9 @@ impl Server {
         .route("/preview/{inscription_id}", get(Self::preview))
         .route("/rare.txt", get(Self::rare_txt))
         .route("/rune/{rune}", get(Self::rune))
+        .route("/rune/{rune}/authority", get(Self::rune_authority))
+        .route("/rune/{rune}/minters", get(Self::rune_minters))
+        .route("/rune/{rune}/blacklist", get(Self::rune_blacklist))
         .route("/runes", get(Self::runes))
         .route("/runes/{page}", get(Self::runes_paginated))
         .route("/sat/{sat}", get(Self::sat))
@@ -931,6 +950,7 @@ impl Server {
     Extension(server_config): Extension<Arc<ServerConfig>>,
     Extension(index): Extension<Arc<Index>>,
     Path(DeserializeFromStr(rune_query)): Path<DeserializeFromStr<query::Rune>>,
+    Query(authority_query): Query<RuneAuthorityQuery>,
     AcceptJson(accept_json): AcceptJson,
   ) -> ServerResult {
     task::block_in_place(|| {
@@ -972,12 +992,36 @@ impl Server {
 
       let mintable = entry.mintable((block_height.n() + 1).into()).is_ok();
 
+      // Get authority flags, supply_extra, minter_count, blacklist_count for JSON API
+      let authority_flags = crate::subcommand::runes::AuthorityFlags {
+        allow_minting: entry
+          .terms
+          .map(|terms| terms.allow_minting)
+          .unwrap_or(false),
+        allow_blacklisting: entry
+          .terms
+          .map(|terms| terms.allow_blacklisting)
+          .unwrap_or(false),
+      };
+      let supply_extra = index.get_supply_extra(id).unwrap_or(Some(0)).unwrap_or(0);
+      let minter_count = index.get_minter_count(id).unwrap_or(0);
+      let blacklist_count = index.get_blacklist_count(id).unwrap_or(0);
+
       Ok(if accept_json {
+        let authority = (authority_query.authority)
+          .then_some(())
+          .map(|_| Self::build_authority_detail(&index, id, &authority_query, server_config.chain));
+
         Json(api::Rune {
           entry,
           id,
           mintable,
           parent,
+          authority_flags: Some(authority_flags),
+          supply_extra: Some(supply_extra),
+          minter_count: Some(minter_count),
+          blacklist_count: Some(blacklist_count),
+          authority: authority.transpose()?,
         })
         .into_response()
       } else {
@@ -986,10 +1030,279 @@ impl Server {
           id,
           mintable,
           parent,
+          authority_flags: Some(authority_flags),
+          authority: None,
+          supply_extra: Some(supply_extra),
+          minter_count: Some(minter_count),
+          blacklist_count: Some(blacklist_count),
         }
         .page(server_config)
         .into_response()
       })
+    })
+  }
+
+  fn build_authority_detail(
+    index: &Index,
+    id: RuneId,
+    authority_query: &RuneAuthorityQuery,
+    chain: Chain,
+  ) -> Result<crate::subcommand::runes::AuthorityDetail> {
+    let page_size = authority_query
+      .page_size
+      .unwrap_or(AUTHORITY_PAGE_DEFAULT)
+      .clamp(1, AUTHORITY_PAGE_LIMIT);
+    let minter_page = authority_query
+      .minter_page
+      .or(authority_query.page)
+      .unwrap_or(0);
+    let blacklist_page = authority_query
+      .blacklist_page
+      .or(authority_query.page)
+      .unwrap_or(0);
+
+    let (minters, minters_more) = index.get_minters_paginated(id, minter_page, page_size)?;
+    let (blacklist_entries, blacklist_more) =
+      index.get_blacklist_paginated(id, blacklist_page, page_size)?;
+
+    let to_detail = |compact: ordinals::CompactScript| {
+      crate::subcommand::runes::ScriptDetail::from_compact(compact, Some(chain))
+    };
+
+    Ok(crate::subcommand::runes::AuthorityDetail {
+      mint: index
+        .get_authority_script(id, ordinals::AuthorityKind::Mint)?
+        .map(to_detail),
+      blacklist: index
+        .get_authority_script(id, ordinals::AuthorityKind::Blacklist)?
+        .map(to_detail),
+      master: index
+        .get_authority_script(id, ordinals::AuthorityKind::Master)?
+        .map(to_detail),
+      minters: minters.into_iter().map(to_detail).collect(),
+      minters_more,
+      minter_page,
+      minter_page_size: page_size,
+      blacklist_entries: blacklist_entries.into_iter().map(to_detail).collect(),
+      blacklist_more,
+      blacklist_page,
+      blacklist_page_size: page_size,
+    })
+  }
+
+  async fn rune_authority(
+    Extension(server_config): Extension<Arc<ServerConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(DeserializeFromStr(rune_query)): Path<DeserializeFromStr<query::Rune>>,
+    Query(authority_query): Query<RuneAuthorityQuery>,
+    AcceptJson(accept_json): AcceptJson,
+  ) -> ServerResult {
+    task::block_in_place(|| {
+      if !accept_json {
+        return Ok(StatusCode::NOT_ACCEPTABLE.into_response());
+      }
+
+      if !index.has_rune_index() {
+        return Err(ServerError::NotFound(
+          "this server has no rune index".to_string(),
+        ));
+      }
+
+      let rune = match rune_query {
+        query::Rune::Spaced(spaced_rune) => spaced_rune.rune,
+        query::Rune::Id(rune_id) => index
+          .get_rune_by_id(rune_id)?
+          .ok_or_not_found(|| format!("rune {rune_id}"))?,
+        query::Rune::Number(number) => index
+          .get_rune_by_number(usize::try_from(number).unwrap())?
+          .ok_or_not_found(|| format!("rune number {number}"))?,
+      };
+
+      let Some((id, entry, _)) = index.rune(rune)? else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+      };
+
+      let authority_flags = crate::subcommand::runes::AuthorityFlags {
+        allow_minting: entry
+          .terms
+          .map(|terms| terms.allow_minting)
+          .unwrap_or(false),
+        allow_blacklisting: entry
+          .terms
+          .map(|terms| terms.allow_blacklisting)
+          .unwrap_or(false),
+      };
+
+      let supply_extra = index.get_supply_extra(id).unwrap_or(Some(0)).unwrap_or(0);
+      let minter_count = index.get_minter_count(id).unwrap_or(0);
+      let blacklist_count = index.get_blacklist_count(id).unwrap_or(0);
+
+      let authority =
+        Self::build_authority_detail(&index, id, &authority_query, server_config.chain)?;
+
+      #[derive(Serialize)]
+      struct AuthorityResponse {
+        id: RuneId,
+        authority_flags: crate::subcommand::runes::AuthorityFlags,
+        supply_extra: u128,
+        minter_count: u32,
+        blacklist_count: u32,
+        authority: crate::subcommand::runes::AuthorityDetail,
+      }
+
+      Ok(
+        Json(AuthorityResponse {
+          id,
+          authority_flags,
+          supply_extra,
+          minter_count,
+          blacklist_count,
+          authority,
+        })
+        .into_response(),
+      )
+    })
+  }
+
+  async fn rune_minters(
+    Extension(server_config): Extension<Arc<ServerConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(DeserializeFromStr(rune_query)): Path<DeserializeFromStr<query::Rune>>,
+    Query(authority_query): Query<RuneAuthorityQuery>,
+    AcceptJson(accept_json): AcceptJson,
+  ) -> ServerResult {
+    task::block_in_place(|| {
+      if !accept_json {
+        return Ok(StatusCode::NOT_ACCEPTABLE.into_response());
+      }
+
+      if !index.has_rune_index() {
+        return Err(ServerError::NotFound(
+          "this server has no rune index".to_string(),
+        ));
+      }
+
+      let rune = match rune_query {
+        query::Rune::Spaced(spaced_rune) => spaced_rune.rune,
+        query::Rune::Id(rune_id) => index
+          .get_rune_by_id(rune_id)?
+          .ok_or_not_found(|| format!("rune {rune_id}"))?,
+        query::Rune::Number(number) => index
+          .get_rune_by_number(usize::try_from(number).unwrap())?
+          .ok_or_not_found(|| format!("rune number {number}"))?,
+      };
+
+      let Some((id, ..)) = index.rune(rune)? else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+      };
+
+      let page_size = authority_query
+        .page_size
+        .unwrap_or(AUTHORITY_PAGE_DEFAULT)
+        .clamp(1, AUTHORITY_PAGE_LIMIT);
+      let page = authority_query
+        .minter_page
+        .or(authority_query.page)
+        .unwrap_or(0);
+
+      let (minters, more) = index.get_minters_paginated(id, page, page_size)?;
+      let minters = minters
+        .into_iter()
+        .map(|compact| {
+          crate::subcommand::runes::ScriptDetail::from_compact(compact, Some(server_config.chain))
+        })
+        .collect::<Vec<_>>();
+
+      #[derive(Serialize)]
+      struct MintersResponse {
+        id: RuneId,
+        page: usize,
+        page_size: usize,
+        more: bool,
+        minters: Vec<crate::subcommand::runes::ScriptDetail>,
+      }
+
+      Ok(
+        Json(MintersResponse {
+          id,
+          page,
+          page_size,
+          more,
+          minters,
+        })
+        .into_response(),
+      )
+    })
+  }
+
+  async fn rune_blacklist(
+    Extension(server_config): Extension<Arc<ServerConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(DeserializeFromStr(rune_query)): Path<DeserializeFromStr<query::Rune>>,
+    Query(authority_query): Query<RuneAuthorityQuery>,
+    AcceptJson(accept_json): AcceptJson,
+  ) -> ServerResult {
+    task::block_in_place(|| {
+      if !accept_json {
+        return Ok(StatusCode::NOT_ACCEPTABLE.into_response());
+      }
+
+      if !index.has_rune_index() {
+        return Err(ServerError::NotFound(
+          "this server has no rune index".to_string(),
+        ));
+      }
+
+      let rune = match rune_query {
+        query::Rune::Spaced(spaced_rune) => spaced_rune.rune,
+        query::Rune::Id(rune_id) => index
+          .get_rune_by_id(rune_id)?
+          .ok_or_not_found(|| format!("rune {rune_id}"))?,
+        query::Rune::Number(number) => index
+          .get_rune_by_number(usize::try_from(number).unwrap())?
+          .ok_or_not_found(|| format!("rune number {number}"))?,
+      };
+
+      let Some((id, ..)) = index.rune(rune)? else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+      };
+
+      let page_size = authority_query
+        .page_size
+        .unwrap_or(AUTHORITY_PAGE_DEFAULT)
+        .clamp(1, AUTHORITY_PAGE_LIMIT);
+      let page = authority_query
+        .blacklist_page
+        .or(authority_query.page)
+        .unwrap_or(0);
+
+      let (blacklist_entries, more) = index.get_blacklist_paginated(id, page, page_size)?;
+      let blacklist_entries = blacklist_entries
+        .into_iter()
+        .map(|compact| {
+          crate::subcommand::runes::ScriptDetail::from_compact(compact, Some(server_config.chain))
+        })
+        .collect::<Vec<_>>();
+
+      #[derive(Serialize)]
+      struct BlacklistResponse {
+        id: RuneId,
+        page: usize,
+        page_size: usize,
+        more: bool,
+        blacklist_entries: Vec<crate::subcommand::runes::ScriptDetail>,
+      }
+
+      Ok(
+        Json(BlacklistResponse {
+          id,
+          page,
+          page_size,
+          more,
+          blacklist_entries,
+        })
+        .into_response(),
+      )
     })
   }
 
@@ -3258,6 +3571,11 @@ mod tests {
         entry,
         mintable: false,
         parent: Some(parent),
+        authority_flags: None,
+        authority: None,
+        supply_extra: None,
+        minter_count: None,
+        blacklist_count: None,
       },
     );
 
