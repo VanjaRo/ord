@@ -486,10 +486,12 @@ mod tests {
     let mut existing_blob = Vec::new();
     existing_blob.push(existing_presence.bits());
     existing_blob.push(CompactScriptKind::P2WPKH as u8);
-    existing_blob.push(mint_body_old.len() as u8);
+    let mint_len = u8::try_from(mint_body_old.len()).expect("compact script body fits in u8");
+    existing_blob.push(mint_len);
     existing_blob.extend(&mint_body_old);
     existing_blob.push(CompactScriptKind::P2TR as u8);
-    existing_blob.push(blacklist_body.len() as u8);
+    let blacklist_len = u8::try_from(blacklist_body.len()).expect("compact script body fits in u8");
+    existing_blob.push(blacklist_len);
     existing_blob.extend(&blacklist_body);
 
     let authorities = AuthorityBits::from(AuthorityKind::Mint.mask());
@@ -520,7 +522,7 @@ mod tests {
     expected.push(compact_body_len);
     expected.extend(&new_mint_body);
     expected.push(CompactScriptKind::P2TR as u8);
-    expected.push(blacklist_body.len() as u8);
+    expected.push(blacklist_len);
     expected.extend(&blacklist_body);
 
     assert_eq!(merged, expected);
