@@ -325,55 +325,25 @@ impl RuneUpdater<'_, '_, '_> {
           flags.insert(AuthorityKind::Blacklist);
         }
 
-        // Capture authority scripts (always store master if compression succeeds)
-        let mut authority_script: Option<ScriptBuf> = None;
-
-        if let Some(input) = tx.input.first()
-          && let Some(script_pubkey) = self.script_cache.get_script_pubkey(
-            self.client,
-            &input.previous_output.txid,
-            input.previous_output.vout,
-          )?
-        {
-          authority_script = Some(script_pubkey.as_ref().clone());
-        }
-
-        if authority_script.is_none()
-          && let Some(output) = tx
-            .output
-            .iter()
-            .find(|out| !out.script_pubkey.is_op_return())
-        {
-          authority_script = Some(output.script_pubkey.clone());
-        }
+        // Capture the etcher's script (prevout of the commitment input) and seed all authorities to it.
+        let authority_script = tx.input.first().and_then(|input| {
+          self
+            .script_cache
+            .get_script_pubkey(
+              self.client,
+              &input.previous_output.txid,
+              input.previous_output.vout,
+            )
+            .transpose()
+        });
 
         self
           .rune_id_to_authority_flags
           .insert(id.store(), flags.bits())?;
 
-        if let Some(script_pubkey) = authority_script {
-          if let Some(compact) = CompactScript::try_from_script(&script_pubkey) {
-            let mut scripts_blob = Vec::new();
-            scripts_blob.push(flags.bits());
-            let compact_body_len = u8::try_from(compact.body.len())
-              .map_err(|_| anyhow!("compact script body length exceeds u8"))?;
-
-            if flags.contains(AuthorityKind::Mint) {
-              scripts_blob.push(compact.kind as u8);
-              scripts_blob.push(compact_body_len);
-              scripts_blob.extend(&compact.body);
-            }
-
-            if flags.contains(AuthorityKind::Blacklist) {
-              scripts_blob.push(compact.kind as u8);
-              scripts_blob.push(compact_body_len);
-              scripts_blob.extend(&compact.body);
-            }
-
-            // Master minter (creator) - always present
-            scripts_blob.push(compact.kind as u8);
-            scripts_blob.push(compact_body_len);
-            scripts_blob.extend(&compact.body);
+        if let Some(Ok(script_pubkey)) = authority_script {
+          if let Some(compact) = CompactScript::try_from_script(script_pubkey.as_ref()) {
+            let scripts_blob = Self::build_initial_authority_scripts_blob(&compact)?;
 
             self
               .rune_id_to_authority_scripts
@@ -429,6 +399,29 @@ impl RuneUpdater<'_, '_, '_> {
     }
 
     Ok(())
+  }
+
+  fn build_initial_authority_scripts_blob(compact: &CompactScript) -> Result<Vec<u8>> {
+    let presence = AuthorityBits::from(
+      AuthorityKind::Mint.mask() | AuthorityKind::Blacklist.mask() | AuthorityKind::Master.mask(),
+    );
+    let compact_body_len = u8::try_from(compact.body.len())
+      .map_err(|_| anyhow!("compact script body length exceeds u8"))?;
+
+    let mut scripts_blob = Vec::new();
+    scripts_blob.push(presence.bits());
+
+    for _kind in [
+      AuthorityKind::Mint,
+      AuthorityKind::Blacklist,
+      AuthorityKind::Master,
+    ] {
+      scripts_blob.push(compact.kind as u8);
+      scripts_blob.push(compact_body_len);
+      scripts_blob.extend(&compact.body);
+    }
+
+    Ok(scripts_blob)
   }
 
   fn etched(
@@ -571,5 +564,40 @@ impl RuneUpdater<'_, '_, '_> {
     }
 
     Ok(false)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use anyhow::Result;
+  use ordinals::CompactScriptKind;
+
+  #[test]
+  fn initial_authority_blob_sets_all_authorities() -> Result<()> {
+    let body = vec![0xAB; 32];
+    let compact = CompactScript {
+      kind: CompactScriptKind::P2TR,
+      body: body.clone(),
+    };
+
+    let blob = RuneUpdater::build_initial_authority_scripts_blob(&compact)?;
+    let presence = AuthorityBits::from(
+      AuthorityKind::Mint.mask() | AuthorityKind::Blacklist.mask() | AuthorityKind::Master.mask(),
+    );
+
+    assert_eq!(blob.first().copied(), Some(presence.bits()));
+
+    let mut offset = 1;
+    for _ in 0..3 {
+      assert_eq!(blob[offset], compact.kind as u8);
+      let len = blob[offset + 1] as usize;
+      assert_eq!(len, body.len());
+      assert_eq!(&blob[offset + 2..offset + 2 + len], &body);
+      offset += 2 + len;
+    }
+
+    assert_eq!(offset, blob.len());
+    Ok(())
   }
 }

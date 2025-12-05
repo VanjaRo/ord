@@ -129,37 +129,14 @@ impl<'a, 'tx, 'client> Executor<'a, 'tx, 'client> {
         presence.insert(kind);
       }
 
-      let mut scripts_blob = Vec::new();
-      scripts_blob.push(presence.bits());
-
-      let mut offset = 1;
-      let append_script =
-        |kind: AuthorityKind, scripts_blob: &mut Vec<u8>, offset: &mut usize| -> Result<()> {
-          if !presence.contains(kind) {
-            return Ok(());
-          }
-
-          if authorities.contains(kind) {
-            scripts_blob.push(compact.kind as u8);
-            scripts_blob.push(compact_body_len);
-            scripts_blob.extend(&compact.body);
-          } else if existing_presence.contains(kind) && *offset + 1 < existing_blob.len() {
-            let body_len = existing_blob[*offset + 1] as usize;
-            if *offset + 2 + body_len <= existing_blob.len() {
-              scripts_blob.extend(&existing_blob[*offset..*offset + 2 + body_len]);
-            }
-          }
-
-          if existing_presence.contains(kind) && *offset + 1 < existing_blob.len() {
-            *offset += 2 + existing_blob[*offset + 1] as usize;
-          }
-
-          Ok(())
-        };
-
-      append_script(AuthorityKind::Mint, &mut scripts_blob, &mut offset)?;
-      append_script(AuthorityKind::Blacklist, &mut scripts_blob, &mut offset)?;
-      append_script(AuthorityKind::Master, &mut scripts_blob, &mut offset)?;
+      let scripts_blob = Self::merge_authority_scripts(
+        &authorities,
+        &existing_blob,
+        existing_presence,
+        presence,
+        &compact,
+        compact_body_len,
+      )?;
 
       self
         .authority
@@ -169,6 +146,52 @@ impl<'a, 'tx, 'client> Executor<'a, 'tx, 'client> {
       self.authority.context_cache.invalidate(target_rune_id);
     }
     Ok(())
+  }
+
+  fn merge_authority_scripts(
+    authorities: &AuthorityBits,
+    existing_blob: &[u8],
+    existing_presence: AuthorityBits,
+    presence: AuthorityBits,
+    compact: &CompactScript,
+    compact_body_len: u8,
+  ) -> Result<Vec<u8>> {
+    let mut scripts_blob = Vec::new();
+    scripts_blob.push(presence.bits());
+
+    let mut offset = 1;
+    let append_script =
+      |kind: AuthorityKind, scripts_blob: &mut Vec<u8>, offset: &mut usize| -> Result<()> {
+        if !presence.contains(kind) {
+          return Ok(());
+        }
+
+        if authorities.contains(kind) {
+          // Write updated script and only advance offset when replacing an existing one.
+          scripts_blob.push(compact.kind as u8);
+          scripts_blob.push(compact_body_len);
+          scripts_blob.extend(&compact.body);
+
+          if existing_presence.contains(kind) && *offset + 1 < existing_blob.len() {
+            *offset += 2 + existing_blob[*offset + 1] as usize;
+          }
+        } else if existing_presence.contains(kind) && *offset + 1 < existing_blob.len() {
+          // Reuse existing script if present, advancing offset only when we read it.
+          let body_len = existing_blob[*offset + 1] as usize;
+          if *offset + 2 + body_len <= existing_blob.len() {
+            scripts_blob.extend(&existing_blob[*offset..*offset + 2 + body_len]);
+            *offset += 2 + body_len;
+          }
+        }
+
+        Ok(())
+      };
+
+    append_script(AuthorityKind::Mint, &mut scripts_blob, &mut offset)?;
+    append_script(AuthorityKind::Blacklist, &mut scripts_blob, &mut offset)?;
+    append_script(AuthorityKind::Master, &mut scripts_blob, &mut offset)?;
+
+    Ok(scripts_blob)
   }
 
   fn process_authority_updates(
@@ -442,6 +465,65 @@ impl<'a, 'tx, 'client> Executor<'a, 'tx, 'client> {
         allocate(balance, amt, output)?;
       }
     }
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use anyhow::Result;
+
+  #[test]
+  fn merge_authority_scripts_preserves_existing_order_after_update() -> Result<()> {
+    // Existing blob has Mint and Blacklist; only Mint is being updated.
+    let mint_body_old = vec![0x11; 20];
+    let blacklist_body = vec![0x22; 32];
+
+    let existing_presence =
+      AuthorityBits::from(AuthorityKind::Mint.mask() | AuthorityKind::Blacklist.mask());
+
+    let mut existing_blob = Vec::new();
+    existing_blob.push(existing_presence.bits());
+    existing_blob.push(CompactScriptKind::P2WPKH as u8);
+    existing_blob.push(mint_body_old.len() as u8);
+    existing_blob.extend(&mint_body_old);
+    existing_blob.push(CompactScriptKind::P2TR as u8);
+    existing_blob.push(blacklist_body.len() as u8);
+    existing_blob.extend(&blacklist_body);
+
+    let authorities = AuthorityBits::from(AuthorityKind::Mint.mask());
+    let mut presence = existing_presence;
+    for kind in authorities.kinds() {
+      presence.insert(kind);
+    }
+
+    let new_mint_body = vec![0x33; 32];
+    let compact = CompactScript {
+      kind: CompactScriptKind::P2WSH,
+      body: new_mint_body.clone(),
+    };
+    let compact_body_len = u8::try_from(compact.body.len()).unwrap();
+
+    let merged = Executor::merge_authority_scripts(
+      &authorities,
+      &existing_blob,
+      existing_presence,
+      presence,
+      &compact,
+      compact_body_len,
+    )?;
+
+    let mut expected = Vec::new();
+    expected.push(presence.bits());
+    expected.push(compact.kind as u8);
+    expected.push(compact_body_len);
+    expected.extend(&new_mint_body);
+    expected.push(CompactScriptKind::P2TR as u8);
+    expected.push(blacklist_body.len() as u8);
+    expected.extend(&blacklist_body);
+
+    assert_eq!(merged, expected);
     Ok(())
   }
 }
