@@ -1003,7 +1003,7 @@ impl Server {
           .map(|terms| terms.allow_blacklisting)
           .unwrap_or(false),
       };
-      let supply_extra = index.get_supply_extra(id).unwrap_or_default().unwrap_or(0);
+      let supply_extra = index.get_supply_extra(id)?;
       let minter_count = index.get_minter_count(id).unwrap_or(0);
       let blacklist_count = index.get_blacklist_count(id).unwrap_or(0);
 
@@ -1018,7 +1018,7 @@ impl Server {
           mintable,
           parent,
           authority_flags: Some(authority_flags),
-          supply_extra: Some(supply_extra),
+          supply_extra,
           minter_count: Some(minter_count),
           blacklist_count: Some(blacklist_count),
           authority: authority.transpose()?,
@@ -1032,7 +1032,7 @@ impl Server {
           parent,
           authority_flags: Some(authority_flags),
           authority: None,
-          supply_extra: Some(supply_extra),
+          supply_extra,
           minter_count: Some(minter_count),
           blacklist_count: Some(blacklist_count),
         }

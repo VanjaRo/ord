@@ -171,7 +171,7 @@ fn test_blacklisting_flow() {
   });
   core.mine_blocks(u64::from(Runestone::COMMIT_CONFIRMATIONS));
 
-  // 6. User A tries to send to User B -> Should FAIL (Runes burned)
+  // 6. User A tries to send to User B -> Should FAIL
   let user_b_script =
     ScriptBuf::from_hex("51202222222222222222222222222222222222222222222222222222222222222222")
       .unwrap();

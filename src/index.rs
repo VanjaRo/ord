@@ -1200,8 +1200,8 @@ impl Index {
     let mut scripts = Vec::new();
     let mut more = false;
 
-    for (i, entry) in iter.by_ref().enumerate() {
-      if i >= page_size {
+    for entry in iter.by_ref() {
+      if scripts.len() >= page_size {
         more = true;
         break;
       }

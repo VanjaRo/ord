@@ -70,7 +70,7 @@ fn one_rune() {
             allow_blacklisting: false
           }),
           authority: None,
-          supply_extra: Some(0),
+          supply_extra: None,
           minter_count: Some(0),
           blacklist_count: Some(0),
         }
@@ -124,7 +124,7 @@ fn two_runes() {
               allow_blacklisting: false
             }),
             authority: None,
-            supply_extra: Some(0),
+            supply_extra: None,
             minter_count: Some(0),
             blacklist_count: Some(0),
           }
@@ -155,7 +155,7 @@ fn two_runes() {
               allow_blacklisting: false
             }),
             authority: None,
-            supply_extra: Some(0),
+            supply_extra: None,
             minter_count: Some(0),
             blacklist_count: Some(0),
           }

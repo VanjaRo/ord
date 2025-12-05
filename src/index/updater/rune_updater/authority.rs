@@ -435,6 +435,11 @@ impl<'a, 'tx, 'client> Authority<'a, 'tx, 'client> {
   }
 
   pub(super) fn set_supply_extra(&mut self, rune_id: RuneId, value: u128) -> Result<()> {
+    if value == 0 {
+      // No-op for zero; we don't persist redundant rows.
+      return Ok(());
+    }
+
     self
       .rune_id_to_supply_extra
       .insert(rune_id.store(), value)?;
