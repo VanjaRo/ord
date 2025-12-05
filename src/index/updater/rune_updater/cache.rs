@@ -48,7 +48,12 @@ impl ScriptCache {
 
     // Fetch from RPC and cache
     if let Some(tx_info) = client.get_raw_transaction_info(txid, None).into_option()? {
-      let script = tx_info.vout[vout as usize].script_pub_key.script()?;
+      let vout_idx = vout as usize;
+      if vout_idx >= tx_info.vout.len() {
+        return Ok(None);
+      }
+
+      let script = tx_info.vout[vout_idx].script_pub_key.script()?;
       let arc = Arc::new(script);
       self.put(key, arc.clone());
       Ok(Some(arc))

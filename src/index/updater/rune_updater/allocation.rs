@@ -39,7 +39,7 @@ impl<'a, 'tx> Allocation<'a, 'tx> {
           let mut locked: Vec<(RuneId, u128)> = Vec::new();
 
           while i < buffer.len() {
-            let ((id, balance), len) = Index::decode_rune_balance(&buffer[i..]).unwrap();
+            let ((id, balance), len) = Index::decode_rune_balance(&buffer[i..])?;
             i += len;
 
             if is_blacklisted(id, &input.previous_output)? {
