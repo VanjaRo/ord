@@ -100,9 +100,7 @@ impl Runestone {
         Tag::HeightStart.take(&mut fields, |[start_height]| {
           u64::try_from(start_height).ok()
         }),
-        Tag::HeightEnd.take(&mut fields, |[start_height]| {
-          u64::try_from(start_height).ok()
-        }),
+        Tag::HeightEnd.take(&mut fields, |[end_height]| u64::try_from(end_height).ok()),
       ),
       amount: Tag::Amount.take(&mut fields, |[amount]| Some(amount)),
       offset: (

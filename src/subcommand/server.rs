@@ -1003,7 +1003,7 @@ impl Server {
           .map(|terms| terms.allow_blacklisting)
           .unwrap_or(false),
       };
-      let supply_extra = index.get_supply_extra(id).unwrap_or(Some(0)).unwrap_or(0);
+      let supply_extra = index.get_supply_extra(id).unwrap_or_default().unwrap_or(0);
       let minter_count = index.get_minter_count(id).unwrap_or(0);
       let blacklist_count = index.get_blacklist_count(id).unwrap_or(0);
 
@@ -1133,7 +1133,7 @@ impl Server {
           .unwrap_or(false),
       };
 
-      let supply_extra = index.get_supply_extra(id).unwrap_or(Some(0)).unwrap_or(0);
+      let supply_extra = index.get_supply_extra(id).unwrap_or_default().unwrap_or(0);
       let minter_count = index.get_minter_count(id).unwrap_or(0);
       let blacklist_count = index.get_blacklist_count(id).unwrap_or(0);
 

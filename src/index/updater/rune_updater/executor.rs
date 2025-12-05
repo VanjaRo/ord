@@ -230,9 +230,18 @@ impl<'a, 'tx, 'client> Executor<'a, 'tx, 'client> {
       authority_updates.blacklist.is_some() || authority_updates.unblacklist.is_some();
     let allow_blacklisting = self.has_blacklist_flag(target_rune_id)?;
     let blacklist_authorized = if allow_blacklisting && has_blacklist_requests {
-      self
-        .authority
-        .check_authority(tx, target_rune_id, AuthorityKind::Blacklist)?
+      let authorized =
+        self
+          .authority
+          .check_authority(tx, target_rune_id, AuthorityKind::Blacklist)?;
+      log::debug!(
+        "Blacklist authority check for {:?}: allowed={}, authorized={}, tx={}",
+        target_rune_id,
+        allow_blacklisting,
+        authorized,
+        tx.compute_txid()
+      );
+      authorized
     } else {
       false
     };
@@ -417,7 +426,7 @@ impl<'a, 'tx, 'client> Executor<'a, 'tx, 'client> {
           // Check blacklist
           let script_pubkey = &tx.output[output].script_pubkey;
           if self.authority.is_blacklisted(id, script_pubkey)? {
-            // Reject the edict and keep balance with the sender
+            // Reject the edict and keep the balance with the sender (no burn).
             return Ok(());
           }
 

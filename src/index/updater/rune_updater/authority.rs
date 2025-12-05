@@ -352,6 +352,14 @@ impl<'a, 'tx, 'client> Authority<'a, 'tx, 'client> {
       return Ok(true);
     }
 
+    log::debug!(
+      "Authority NOT matched for {:?} ({:?}); expected script {:?}, txid={}",
+      rune_id,
+      authority_type,
+      expected_script,
+      tx.compute_txid()
+    );
+
     Ok(false)
   }
 

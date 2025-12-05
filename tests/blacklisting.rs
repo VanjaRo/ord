@@ -190,7 +190,7 @@ fn test_blacklisting_flow() {
     ..default()
   };
 
-  core.broadcast_tx(TransactionTemplate {
+  let send_txid = core.broadcast_tx(TransactionTemplate {
     inputs: &[(
       transfer_block,
       transfer_tx_idx,
@@ -205,11 +205,7 @@ fn test_blacklisting_flow() {
   });
   core.mine_blocks(u64::from(Runestone::COMMIT_CONFIRMATIONS));
 
-  // 7. Verify User B received NOTHING (Burned)
-  // We can check User B's address balance if we had a way to index it by address.
-  // But we can check total supply (burned should increase).
-  // Or check if there is an event?
-
+  // 7. Verify User B received NOTHING (transaction ignored, not burned)
   let runes_output = CommandBuilder::new("--regtest --index-runes runes")
     .core(&core)
     .ord(&ord)
@@ -219,7 +215,7 @@ fn test_blacklisting_flow() {
   if let Some(rune_info) = runes_output.runes.get(&rune) {
     assert_eq!(
       rune_info.burned, 0,
-      "Blacklisted transfers should be rejected without burning balances"
+      "Blacklisted transfers should be rejected without burning"
     );
   } else {
     panic!(
@@ -228,6 +224,22 @@ fn test_blacklisting_flow() {
       runes_output.runes.keys()
     );
   }
+
+  let balances = CommandBuilder::new("--regtest --index-runes balances")
+    .core(&core)
+    .ord(&ord)
+    .run_and_deserialize_output::<Balances>();
+
+  let sent_to_blacklisted = balances
+    .runes
+    .values()
+    .flat_map(|utxos| utxos.keys())
+    .any(|outpoint| outpoint.txid == send_txid && outpoint.vout == 1);
+
+  assert!(
+    !sent_to_blacklisted,
+    "Blacklisted transfer should not credit the recipient"
+  );
 }
 
 #[test]
@@ -357,7 +369,7 @@ fn test_blacklisting_cant_receive() {
     ..default()
   };
 
-  core.broadcast_tx(TransactionTemplate {
+  let send_txid = core.broadcast_tx(TransactionTemplate {
     inputs: &[(etch_block, etch_tx_idx, 1, Witness::default())],
     outputs: 2,
     op_return: Some(send_runestone.encipher()),
@@ -367,7 +379,7 @@ fn test_blacklisting_cant_receive() {
   });
   core.mine_blocks(u64::from(Runestone::COMMIT_CONFIRMATIONS));
 
-  // 6. Verify User A received NOTHING (Burned)
+  // 6. Verify User A received NOTHING (transaction ignored, not burned)
   let runes_output = CommandBuilder::new("--regtest --index-runes runes")
     .core(&core)
     .ord(&ord)
@@ -382,4 +394,20 @@ fn test_blacklisting_cant_receive() {
   } else {
     panic!("Rune {} not found", rune);
   }
+
+  let balances = CommandBuilder::new("--regtest --index-runes balances")
+    .core(&core)
+    .ord(&ord)
+    .run_and_deserialize_output::<Balances>();
+
+  let sent_to_blacklisted = balances
+    .runes
+    .values()
+    .flat_map(|utxos| utxos.keys())
+    .any(|outpoint| outpoint.txid == send_txid);
+
+  assert!(
+    !sent_to_blacklisted,
+    "Sending to a blacklisted address should not credit that address"
+  );
 }

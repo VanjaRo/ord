@@ -287,7 +287,7 @@ fn test_authority_minting_fails_without_authority() {
 }
 
 #[test]
-fn test_authority_in_second_input_fails() {
+fn test_authority_in_second_input_succeeds() {
   let core = mockcore::builder().network(Network::Regtest).build();
   let ord = TestServer::spawn_with_server_args(&core, &["--regtest", "--index-runes"], &[]);
   core.mine_blocks(1);

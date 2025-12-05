@@ -150,6 +150,18 @@ impl RuneUpdater<'_, '_, '_> {
     tx: &Transaction,
     txid: Txid,
   ) -> Result<HashMap<RuneId, Lot>> {
+    // Build an authority helper to check blacklist for default allocations.
+    let mut authority = Authority::new(
+      self.client,
+      self.rune_id_to_authority_flags,
+      self.rune_id_to_authority_scripts,
+      self.rune_id_to_minters,
+      self.rune_id_to_blacklist,
+      &mut self.script_cache,
+      self.rune_id_to_supply_extra,
+      &mut self.authority_cache,
+    );
+
     let mut burned: HashMap<RuneId, Lot> = HashMap::new();
 
     if let Some(Artifact::Cenotaph(_)) = artifact {
@@ -179,7 +191,19 @@ impl RuneUpdater<'_, '_, '_> {
         })
       {
         for (id, balance) in unallocated {
-          if balance > 0 {
+          if balance == 0 {
+            continue;
+          }
+
+          // If the chosen vout is blacklisted, keep balance with sender (no burn, no credit).
+          let dest_script = &tx.output[vout].script_pubkey;
+          if authority.is_blacklisted(id, dest_script)? {
+            log::info!(
+              "Default allocation for {:?} blocked by blacklist; keeping with sender (tx={})",
+              id,
+              txid
+            );
+          } else {
             *allocated[vout].entry(id).or_default() += balance;
           }
         }
