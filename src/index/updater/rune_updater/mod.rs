@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::anyhow;
 use ordinals::{AuthorityBits, AuthorityKind, CompactScript};
 use std::collections::HashMap;
 
@@ -134,11 +135,10 @@ impl RuneUpdater<'_, '_, '_> {
     etched: Option<(RuneId, Rune)>,
     unallocated: &mut HashMap<RuneId, Lot>,
   ) {
-    if let Artifact::Runestone(runestone) = artifact {
-      if let Some((id, ..)) = etched {
-        *unallocated.entry(id).or_default() +=
-          runestone.etching.unwrap().premine.unwrap_or_default();
-      }
+    if let Artifact::Runestone(runestone) = artifact
+      && let Some((id, ..)) = etched
+    {
+      *unallocated.entry(id).or_default() += runestone.etching.unwrap().premine.unwrap_or_default();
     }
   }
 
@@ -328,24 +328,23 @@ impl RuneUpdater<'_, '_, '_> {
         // Capture authority scripts (always store master if compression succeeds)
         let mut authority_script: Option<ScriptBuf> = None;
 
-        if let Some(input) = tx.input.first() {
-          if let Some(script_pubkey) = self.script_cache.get_script_pubkey(
+        if let Some(input) = tx.input.first()
+          && let Some(script_pubkey) = self.script_cache.get_script_pubkey(
             self.client,
             &input.previous_output.txid,
             input.previous_output.vout,
-          )? {
-            authority_script = Some(script_pubkey.as_ref().clone());
-          }
+          )?
+        {
+          authority_script = Some(script_pubkey.as_ref().clone());
         }
 
-        if authority_script.is_none() {
-          if let Some(output) = tx
+        if authority_script.is_none()
+          && let Some(output) = tx
             .output
             .iter()
             .find(|out| !out.script_pubkey.is_op_return())
-          {
-            authority_script = Some(output.script_pubkey.clone());
-          }
+        {
+          authority_script = Some(output.script_pubkey.clone());
         }
 
         self
@@ -356,22 +355,24 @@ impl RuneUpdater<'_, '_, '_> {
           if let Some(compact) = CompactScript::try_from_script(&script_pubkey) {
             let mut scripts_blob = Vec::new();
             scripts_blob.push(flags.bits());
+            let compact_body_len = u8::try_from(compact.body.len())
+              .map_err(|_| anyhow!("compact script body length exceeds u8"))?;
 
             if flags.contains(AuthorityKind::Mint) {
               scripts_blob.push(compact.kind as u8);
-              scripts_blob.push(compact.body.len() as u8);
+              scripts_blob.push(compact_body_len);
               scripts_blob.extend(&compact.body);
             }
 
             if flags.contains(AuthorityKind::Blacklist) {
               scripts_blob.push(compact.kind as u8);
-              scripts_blob.push(compact.body.len() as u8);
+              scripts_blob.push(compact_body_len);
               scripts_blob.extend(&compact.body);
             }
 
             // Master minter (creator) - always present
             scripts_blob.push(compact.kind as u8);
-            scripts_blob.push(compact.body.len() as u8);
+            scripts_blob.push(compact_body_len);
             scripts_blob.extend(&compact.body);
 
             self

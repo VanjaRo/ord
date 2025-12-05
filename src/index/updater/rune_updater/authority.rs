@@ -85,23 +85,26 @@ impl ScriptBloom {
 
     // Keep bloom small: 8 bits per entry, rounded up to power of two, capped at ~1MiB.
     let bit_count = (entries.next_power_of_two().saturating_mul(8)).clamp(64, 1 << 20);
-    let words = (bit_count + 63) / 64;
+    let words = bit_count.div_ceil(64);
     Some(Self {
       bits: vec![0; words],
-      mask: (bit_count as u64).saturating_sub(1),
+      mask: u64::try_from(bit_count).ok()?.saturating_sub(1),
     })
   }
 
-  fn hash(data: &[u8], seed: u64) -> usize {
+  fn hash(data: &[u8], seed: u64) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     seed.hash(&mut hasher);
     data.hash(&mut hasher);
-    hasher.finish() as usize
+    hasher.finish()
   }
 
   fn indices(&self, data: &[u8]) -> (usize, usize) {
-    let idx_a = Self::hash(data, 0) & self.mask as usize;
-    let idx_b = Self::hash(data, 0x9e3779b97f4a7c15) & self.mask as usize;
+    let mask = self.mask;
+    let hash_a = Self::hash(data, 0) & mask;
+    let hash_b = Self::hash(data, 0x9e3779b97f4a7c15) & mask;
+    let idx_a = usize::try_from(hash_a).expect("mask fits usize");
+    let idx_b = usize::try_from(hash_b).expect("mask fits usize");
     (idx_a, idx_b)
   }
 
@@ -367,7 +370,7 @@ impl<'a, 'tx, 'client> Authority<'a, 'tx, 'client> {
       context
         .minters
         .iter()
-        .filter_map(|m| m.script().map(Clone::clone))
+        .filter_map(|m| m.script().cloned())
         .collect()
     };
 
@@ -388,17 +391,17 @@ impl<'a, 'tx, 'client> Authority<'a, 'tx, 'client> {
   ) -> Result<bool> {
     let context = self.get_context(rune_id)?;
 
-    if let Some(bloom) = &context.blacklist_bloom {
-      if !bloom.might_contain(script_pubkey.as_bytes()) {
-        return Ok(false);
-      }
+    if let Some(bloom) = &context.blacklist_bloom
+      && !bloom.might_contain(script_pubkey.as_bytes())
+    {
+      return Ok(false);
     }
 
     for entry in &context.blacklist {
-      if let Some(candidate_script) = entry.script() {
-        if script_pubkey == candidate_script {
-          return Ok(true);
-        }
+      if let Some(candidate_script) = entry.script()
+        && script_pubkey == candidate_script
+      {
+        return Ok(true);
       }
     }
 

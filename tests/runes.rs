@@ -272,7 +272,8 @@ fn mint_with_authority() {
     .run_and_deserialize_output::<Output>();
 
   let rune_info = output.runes.values().next().expect("Rune not found");
-  assert_eq!(rune_info.supply, 1000);
+  assert_eq!(rune_info.supply, 0);
+  assert_eq!(rune_info.supply_extra, Some(1000));
   let rune = output.runes.keys().next().unwrap();
 
   // 4. Check Balance

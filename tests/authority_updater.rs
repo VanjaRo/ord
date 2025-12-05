@@ -3,7 +3,9 @@ use super::*;
 fn rune_commitment_witness(rune: Rune) -> Witness {
   let mut buf = bitcoin::script::PushBytesBuf::new();
   buf.extend_from_slice(&rune.commitment()).unwrap();
-  let script = bitcoin::script::Builder::new().push_slice(buf).into_script();
+  let script = bitcoin::script::Builder::new()
+    .push_slice(buf)
+    .into_script();
   Witness::from_slice(&[script.into_bytes(), Vec::new()])
 }
 
@@ -61,7 +63,7 @@ fn test_authority_minting() {
       0,
       rune_commitment_witness(Rune(RUNE)),
     )], // Spend authority funding
-    recipient: Some(authority_address.clone()),                  // Send change back to authority
+    recipient: Some(authority_address.clone()), // Send change back to authority
     outputs: 2,
     op_return: Some(runestone.encipher()),
     op_return_index: Some(0), // OP_RETURN at 0, Change at 1
@@ -139,7 +141,12 @@ fn test_authority_minting() {
     .runes
     .get(&Rune(RUNE))
     .expect("Rune info not found");
-  assert_eq!(rune_info.supply, 1000, "Supply should be 1000");
+  assert_eq!(rune_info.supply, 0, "Base supply should remain 0");
+  assert_eq!(
+    rune_info.supply_extra,
+    Some(1000),
+    "Authority minting should be tracked in supply_extra"
+  );
 }
 
 #[test]

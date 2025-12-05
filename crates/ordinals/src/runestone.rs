@@ -126,7 +126,8 @@ impl Runestone {
       existing_terms.allow_blacklisting |= allow_blacklisting;
     }
 
-    let etching = Flag::Etching.take(&mut flags).then(|| Etching {
+    let has_etching_flag = Flag::Etching.take(&mut flags);
+    let etching = has_etching_flag.then(|| Etching {
       divisibility: Tag::Divisibility.take(&mut fields, |[divisibility]| {
         let divisibility = u8::try_from(divisibility).ok()?;
         (divisibility <= Etching::MAX_DIVISIBILITY).then_some(divisibility)
@@ -144,6 +145,10 @@ impl Runestone {
       turbo: Flag::Turbo.take(&mut flags),
     });
 
+    if has_terms_flag && !has_etching_flag {
+      flaw.get_or_insert(Flaw::UnrecognizedFlag);
+    }
+
     let mint = Tag::Mint.take(&mut fields, |[block, tx]| {
       RuneId::new(block.try_into().ok()?, tx.try_into().ok()?)
     });
@@ -157,27 +162,27 @@ impl Runestone {
     // Format: [authority_bits, script_len, script_bytes...]
     // authority_bits: 3 LSB bits (bit0=Mint, bit1=Blacklist, bit2=Master)
     let mut set_authority = None;
-    if let Some(values) = fields.get(&Tag::SetAuthority.into()) {
-      if values.len() >= 2 {
-        let authorities = u8::try_from(*values.get(0)?)
-          .ok()
-          .map(AuthorityBits::from)?;
-        let script_len = usize::try_from(*values.get(1)?).ok()?;
-        if script_len <= 32 && values.len() >= 2 + script_len {
-          let script_bytes: Vec<u8> = values
-            .iter()
-            .skip(2)
-            .take(script_len)
-            .filter_map(|v| u8::try_from(*v).ok())
-            .collect();
-          if script_bytes.len() == script_len {
-            set_authority = Some(SetAuthority {
-              authorities,
-              script_pubkey_compact: script_bytes,
-            });
-            // Remove the consumed values
-            fields.remove(&Tag::SetAuthority.into());
-          }
+    if let Some(values) = fields.get(&Tag::SetAuthority.into())
+      && values.len() >= 2
+    {
+      let authorities = u8::try_from(*values.front()?)
+        .ok()
+        .map(AuthorityBits::from)?;
+      let script_len = usize::try_from(*values.get(1)?).ok()?;
+      if script_len <= 32 && values.len() >= 2 + script_len {
+        let script_bytes: Vec<u8> = values
+          .iter()
+          .skip(2)
+          .take(script_len)
+          .filter_map(|v| u8::try_from(*v).ok())
+          .collect();
+        if script_bytes.len() == script_len {
+          set_authority = Some(SetAuthority {
+            authorities,
+            script_pubkey_compact: script_bytes,
+          });
+          // Remove the consumed values
+          fields.remove(&Tag::SetAuthority.into());
         }
       }
     }
@@ -337,7 +342,7 @@ impl Runestone {
       if let Some(list) = list {
         for entry in list {
           // Each entry is [kind, body...] where body is ≤32 bytes
-          if entry.len() >= 1 {
+          if !entry.is_empty() {
             let kind = entry[0];
             let body = &entry[1..];
             tag.encode([kind.into()], &mut payload);

@@ -36,7 +36,7 @@ impl CompactScript {
             kind: CompactScriptKind::P2WPKH,
             body,
           }),
-          len if len <= 32 => Some(Self {
+          32 => Some(Self {
             kind: CompactScriptKind::P2WSH,
             body,
           }),
@@ -141,5 +141,16 @@ mod tests {
     };
 
     assert!(compact.to_script().is_none());
+  }
+
+  #[test]
+  fn try_from_script_rejects_invalid_witness_length() {
+    for len in [1usize, 19, 21, 31, 33] {
+      let mut bytes = vec![opcodes::all::OP_PUSHBYTES_0.to_u8(), len as u8];
+      bytes.extend(std::iter::repeat(0xAA).take(len));
+      let script = ScriptBuf::from_bytes(bytes);
+
+      assert!(CompactScript::try_from_script(&script).is_none());
+    }
   }
 }

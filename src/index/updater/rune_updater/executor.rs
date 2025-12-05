@@ -97,6 +97,8 @@ impl<'a, 'tx, 'client> Executor<'a, 'tx, 'client> {
         kind: default_kind,
         body: set_authority.script_pubkey_compact.clone(),
       };
+      let compact_body_len = u8::try_from(compact.body.len())
+        .map_err(|_| anyhow!("compact script body length exceeds u8"))?;
 
       let mut flags = self
         .authority
@@ -131,30 +133,33 @@ impl<'a, 'tx, 'client> Executor<'a, 'tx, 'client> {
       scripts_blob.push(presence.bits());
 
       let mut offset = 1;
-      let append_script = |kind: AuthorityKind, scripts_blob: &mut Vec<u8>, offset: &mut usize| {
-        if !presence.contains(kind) {
-          return;
-        }
-
-        if authorities.contains(kind) {
-          scripts_blob.push(compact.kind as u8);
-          scripts_blob.push(compact.body.len() as u8);
-          scripts_blob.extend(&compact.body);
-        } else if existing_presence.contains(kind) && *offset + 1 < existing_blob.len() {
-          let body_len = existing_blob[*offset + 1] as usize;
-          if *offset + 2 + body_len <= existing_blob.len() {
-            scripts_blob.extend(&existing_blob[*offset..*offset + 2 + body_len]);
+      let append_script =
+        |kind: AuthorityKind, scripts_blob: &mut Vec<u8>, offset: &mut usize| -> Result<()> {
+          if !presence.contains(kind) {
+            return Ok(());
           }
-        }
 
-        if existing_presence.contains(kind) && *offset + 1 < existing_blob.len() {
-          *offset += 2 + existing_blob[*offset + 1] as usize;
-        }
-      };
+          if authorities.contains(kind) {
+            scripts_blob.push(compact.kind as u8);
+            scripts_blob.push(compact_body_len);
+            scripts_blob.extend(&compact.body);
+          } else if existing_presence.contains(kind) && *offset + 1 < existing_blob.len() {
+            let body_len = existing_blob[*offset + 1] as usize;
+            if *offset + 2 + body_len <= existing_blob.len() {
+              scripts_blob.extend(&existing_blob[*offset..*offset + 2 + body_len]);
+            }
+          }
 
-      append_script(AuthorityKind::Mint, &mut scripts_blob, &mut offset);
-      append_script(AuthorityKind::Blacklist, &mut scripts_blob, &mut offset);
-      append_script(AuthorityKind::Master, &mut scripts_blob, &mut offset);
+          if existing_presence.contains(kind) && *offset + 1 < existing_blob.len() {
+            *offset += 2 + existing_blob[*offset + 1] as usize;
+          }
+
+          Ok(())
+        };
+
+      append_script(AuthorityKind::Mint, &mut scripts_blob, &mut offset)?;
+      append_script(AuthorityKind::Blacklist, &mut scripts_blob, &mut offset)?;
+      append_script(AuthorityKind::Master, &mut scripts_blob, &mut offset)?;
 
       self
         .authority
@@ -263,16 +268,14 @@ impl<'a, 'tx, 'client> Executor<'a, 'tx, 'client> {
           "Ignoring unblacklist operations for {:?}: allow_blacklisting not enabled",
           target_rune_id
         );
-      } else {
-        if blacklist_authorized {
-          changed |= Self::apply_entries(Some(unblacklist), |entry| {
-            self
-              .authority
-              .rune_id_to_blacklist
-              .remove(target_rune_id.store(), entry)?;
-            Ok(true)
-          })?;
-        }
+      } else if blacklist_authorized {
+        changed |= Self::apply_entries(Some(unblacklist), |entry| {
+          self
+            .authority
+            .rune_id_to_blacklist
+            .remove(target_rune_id.store(), entry)?;
+          Ok(true)
+        })?;
       }
     }
 
