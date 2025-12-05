@@ -150,6 +150,11 @@ fn test_blacklisting_flow() {
   let user_a_xonly = &user_a_script.as_bytes()[2..]; // Skip 51 20
 
   let blacklist_runestone = Runestone {
+    edicts: vec![Edict {
+      id: rune_id,
+      amount: 0,
+      output: 0,
+    }],
     authority: Some(ordinals::AuthorityUpdates {
       blacklist: Some(vec![entry(CompactScriptKind::P2TR, user_a_xonly)]),
       ..default()
@@ -338,6 +343,11 @@ fn test_blacklisting_cant_receive() {
 
   let user_a_xonly = &user_a_script.as_bytes()[2..];
   let blacklist_runestone = Runestone {
+    edicts: vec![Edict {
+      id: rune_id,
+      amount: 0,
+      output: 0,
+    }],
     authority: Some(ordinals::AuthorityUpdates {
       blacklist: Some(vec![entry(CompactScriptKind::P2TR, user_a_xonly)]),
       ..default()

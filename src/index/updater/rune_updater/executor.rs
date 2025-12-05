@@ -45,7 +45,16 @@ impl<'a, 'tx, 'client> Executor<'a, 'tx, 'client> {
     // 2. Authority Updates (Minter/Blacklist)
     if let Some(authority_updates) = &runestone.authority {
       let target_rune_id = runestone
-        .mint
+        .edicts
+        .first()
+        .and_then(|edict| {
+          if edict.id == RuneId::default() {
+            etched.map(|(id, _)| id)
+          } else {
+            Some(edict.id)
+          }
+        })
+        .or(runestone.mint)
         .or_else(|| etched.map(|(id, _)| id))
         .ok_or_else(|| anyhow!("No target rune for authority update"))
         .ok();
