@@ -8,4 +8,8 @@ pub struct Terms {
   pub cap: u128,
   pub height: Option<Range>,
   pub offset: Option<Range>,
+  #[serde(default)]
+  pub allow_minting: Option<bool>,
+  #[serde(default)]
+  pub allow_blacklisting: Option<bool>,
 }

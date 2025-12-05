@@ -6,6 +6,16 @@ pub struct RuneHtml {
   pub id: RuneId,
   pub mintable: bool,
   pub parent: Option<InscriptionId>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub authority_flags: Option<crate::subcommand::runes::AuthorityFlags>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub authority: Option<crate::subcommand::runes::AuthorityDetail>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub supply_extra: Option<u128>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub minter_count: Option<u32>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub blacklist_count: Option<u32>,
 }
 
 impl RuneHtml {
@@ -55,6 +65,7 @@ mod tests {
             offset: (None, None),
             height: (Some(10), Some(11)),
             amount: Some(1000000001),
+            ..default()
           }),
           number: 25,
           premine: 123456789,
@@ -72,9 +83,19 @@ mod tests {
           txid: Txid::all_zeros(),
           index: 0,
         }),
+        authority_flags: Some(crate::subcommand::runes::AuthorityFlags {
+          allow_minting: true,
+          allow_blacklisting: true,
+        }),
+        authority: None,
+        supply_extra: Some(0),
+        minter_count: Some(0),
+        blacklist_count: Some(0),
       },
       "<h1>B•CGDENLQRQWDSLRUGSNLBTMFIJAV</h1>
-.*<a href=/inscription/.*<iframe .* src=/preview/0{64}i0></iframe></a>.*
+\\s+<div class=thumbnails>
+\\s+<a href=/inscription/0{64}i0><iframe sandbox=allow-scripts scrolling=no loading=lazy src=/preview/0{64}i0></iframe></a>
+\\s+</div>
 <dl>
   <dt>number</dt>
   <dd>25</dd>
@@ -105,6 +126,17 @@ mod tests {
       <dd>true</dd>
       <dt>progress</dt>
       <dd>99%</dd>
+    </dl>
+  </dd>
+  <dt>authority</dt>
+  <dd>
+    <dl>
+      <dt>allow minting</dt>
+      <dd>true</dd>
+      <dt>allow blacklisting</dt>
+      <dd>true</dd>
+      <dt>authority scripts</dt>
+      <dd><a href=/rune/10:9\\?authority=true>json</a></dd>
     </dl>
   </dd>
   <dt>supply</dt>
@@ -154,6 +186,14 @@ mod tests {
         id: RuneId { block: 10, tx: 9 },
         mintable: false,
         parent: None,
+        authority_flags: Some(crate::subcommand::runes::AuthorityFlags {
+          allow_minting: false,
+          allow_blacklisting: false,
+        }),
+        authority: None,
+        supply_extra: Some(0),
+        minter_count: Some(0),
+        blacklist_count: Some(0),
       },
       "<h1>B•CGDENLQRQWDSLRUGSNLBTMFIJAV</h1>
 <dl>.*
@@ -188,6 +228,14 @@ mod tests {
         id: RuneId { block: 10, tx: 9 },
         mintable: false,
         parent: None,
+        authority_flags: Some(crate::subcommand::runes::AuthorityFlags {
+          allow_minting: false,
+          allow_blacklisting: false,
+        }),
+        authority: None,
+        supply_extra: Some(0),
+        minter_count: Some(0),
+        blacklist_count: Some(0),
       },
       "<h1>B•CGDENLQRQWDSLRUGSNLBTMFIJAV</h1>
 <dl>.*
@@ -210,6 +258,7 @@ mod tests {
             offset: (None, None),
             height: (None, None),
             amount: None,
+            ..default()
           }),
           divisibility: 9,
           etching: Txid::all_zeros(),
@@ -227,6 +276,11 @@ mod tests {
         id: RuneId { block: 10, tx: 9 },
         mintable: false,
         parent: None,
+        authority_flags: None,
+        authority: None,
+        supply_extra: None,
+        minter_count: None,
+        blacklist_count: None,
       },
       "<h1>B•CGDENLQRQWDSLRUGSNLBTMFIJAV</h1>
 <dl>.*
@@ -269,6 +323,7 @@ mod tests {
             offset: (None, None),
             height: (None, None),
             amount: None,
+            ..default()
           }),
           number: 0,
           premine: 0,
@@ -286,6 +341,11 @@ mod tests {
           txid: Txid::all_zeros(),
           index: 0,
         }),
+        authority_flags: None,
+        authority: None,
+        supply_extra: None,
+        minter_count: None,
+        blacklist_count: None,
       },
       ".*
       <dt>mintable</dt>
@@ -306,6 +366,7 @@ mod tests {
             offset: (None, None),
             height: (None, None),
             amount: None,
+            ..default()
           }),
           number: 0,
           premine: 0,
@@ -323,6 +384,11 @@ mod tests {
           txid: Txid::all_zeros(),
           index: 0,
         }),
+        authority_flags: None,
+        authority: None,
+        supply_extra: None,
+        minter_count: None,
+        blacklist_count: None,
       },
       ".*
       <dt>mintable</dt>

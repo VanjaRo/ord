@@ -11,4 +11,6 @@ pub struct Etching {
   pub premine: Decimal,
   pub terms: Option<batch::Terms>,
   pub turbo: bool,
+  pub allow_minting: Option<bool>,
+  pub allow_blacklisting: Option<bool>,
 }

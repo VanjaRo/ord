@@ -448,6 +448,40 @@ impl Plan {
         destination = None;
       }
 
+      let allow_minting = etching.allow_minting.unwrap_or(false);
+      let allow_blacklisting = etching.allow_blacklisting.unwrap_or(false);
+
+      let mut terms = etching
+        .terms
+        .map(|terms| -> Result<ordinals::Terms> {
+          Ok(ordinals::Terms {
+            cap: (terms.cap > 0).then_some(terms.cap),
+            height: (
+              terms.height.and_then(|range| range.start),
+              terms.height.and_then(|range| range.end),
+            ),
+            amount: Some(terms.amount.to_integer(etching.divisibility)?),
+            offset: (
+              terms.offset.and_then(|range| range.start),
+              terms.offset.and_then(|range| range.end),
+            ),
+            allow_minting: terms.allow_minting.unwrap_or(allow_minting),
+            allow_blacklisting: terms.allow_blacklisting.unwrap_or(allow_blacklisting),
+          })
+        })
+        .transpose()?;
+
+      if terms.is_none() && (allow_minting || allow_blacklisting) {
+        terms = Some(ordinals::Terms {
+          cap: None,
+          height: (None, None),
+          amount: None,
+          offset: (None, None),
+          allow_minting,
+          allow_blacklisting,
+        });
+      }
+
       let inner = Runestone {
         edicts: Vec::new(),
         etching: Some(ordinals::Etching {
@@ -456,27 +490,13 @@ impl Plan {
           rune: Some(etching.rune.rune),
           spacers: (etching.rune.spacers > 0).then_some(etching.rune.spacers),
           symbol: Some(etching.symbol),
-          terms: etching
-            .terms
-            .map(|terms| -> Result<ordinals::Terms> {
-              Ok(ordinals::Terms {
-                cap: (terms.cap > 0).then_some(terms.cap),
-                height: (
-                  terms.height.and_then(|range| range.start),
-                  terms.height.and_then(|range| range.end),
-                ),
-                amount: Some(terms.amount.to_integer(etching.divisibility)?),
-                offset: (
-                  terms.offset.and_then(|range| range.start),
-                  terms.offset.and_then(|range| range.end),
-                ),
-              })
-            })
-            .transpose()?,
+          terms,
           turbo: etching.turbo,
         }),
         mint: None,
         pointer: (premine > 0).then_some((reveal_outputs.len() - 1).try_into().unwrap()),
+        set_authority: None,
+        authority: None,
       };
 
       let script_pubkey = inner.encipher();

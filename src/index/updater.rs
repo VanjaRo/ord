@@ -1,5 +1,8 @@
 use {
-  self::{inscription_updater::InscriptionUpdater, rune_updater::RuneUpdater},
+  self::{
+    inscription_updater::InscriptionUpdater,
+    rune_updater::{AuthorityContextCache, RuneUpdater, ScriptCache},
+  },
   super::{fetcher::Fetcher, *},
   futures::future::try_join_all,
   tokio::sync::{
@@ -357,11 +360,20 @@ impl Updater<'_> {
       let mut rune_to_rune_id = wtx.open_table(RUNE_TO_RUNE_ID)?;
       let mut sequence_number_to_rune_id = wtx.open_table(SEQUENCE_NUMBER_TO_RUNE_ID)?;
       let mut transaction_id_to_rune = wtx.open_table(TRANSACTION_ID_TO_RUNE)?;
+      let mut rune_id_to_authority_flags = wtx.open_table(RUNE_ID_TO_AUTHORITY_FLAGS)?;
+      let mut rune_id_to_authority_scripts = wtx.open_table(RUNE_ID_TO_AUTHORITY_SCRIPTS)?;
+      let mut rune_id_to_minters = wtx.open_multimap_table(RUNE_ID_TO_MINTERS)?;
+      let mut rune_id_to_blacklist = wtx.open_multimap_table(RUNE_ID_TO_BLACKLIST)?;
+      let mut rune_id_to_supply_extra = wtx.open_table(RUNE_ID_TO_SUPPLY_EXTRA)?;
 
       let runes = statistic_to_count
         .get(&Statistic::Runes.into())?
         .map(|x| x.value())
         .unwrap_or(0);
+
+      let cache_budget = self.index.settings.index_cache_size();
+      let script_cache_budget = cache_budget.saturating_mul(5).saturating_div(10).max(1);
+      let authority_cache_budget = cache_budget.saturating_mul(4).saturating_div(10).max(1);
 
       let mut rune_updater = RuneUpdater {
         event_sender: self.index.event_sender.as_ref(),
@@ -381,6 +393,13 @@ impl Updater<'_> {
         sequence_number_to_rune_id: &mut sequence_number_to_rune_id,
         statistic_to_count: &mut statistic_to_count,
         transaction_id_to_rune: &mut transaction_id_to_rune,
+        rune_id_to_authority_flags: &mut rune_id_to_authority_flags,
+        rune_id_to_authority_scripts: &mut rune_id_to_authority_scripts,
+        rune_id_to_minters: &mut rune_id_to_minters,
+        rune_id_to_blacklist: &mut rune_id_to_blacklist,
+        rune_id_to_supply_extra: &mut rune_id_to_supply_extra,
+        script_cache: ScriptCache::new(script_cache_budget),
+        authority_cache: AuthorityContextCache::new(authority_cache_budget),
       };
 
       for (i, (tx, txid)) in block.txdata.iter().enumerate() {

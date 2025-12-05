@@ -148,6 +148,8 @@ type TermsEntryValue = (
   (Option<u64>, Option<u64>), // height
   Option<u128>,               // amount
   (Option<u64>, Option<u64>), // offset
+  bool,                       // allow_minting
+  bool,                       // allow_blacklisting
 );
 
 pub(super) type RuneEntryValue = (
@@ -225,12 +227,16 @@ impl Entry for RuneEntry {
         spacers,
       },
       symbol,
-      terms: terms.map(|(cap, height, amount, offset)| Terms {
-        cap,
-        height,
-        amount,
-        offset,
-      }),
+      terms: terms.map(
+        |(cap, height, amount, offset, allow_minting, allow_blacklisting)| Terms {
+          cap,
+          height,
+          amount,
+          offset,
+          allow_minting,
+          allow_blacklisting,
+        },
+      ),
       timestamp,
       turbo,
     }
@@ -265,7 +271,18 @@ impl Entry for RuneEntry {
            height,
            amount,
            offset,
-         }| (cap, height, amount, offset),
+           allow_minting,
+           allow_blacklisting,
+         }| {
+          (
+            cap,
+            height,
+            amount,
+            offset,
+            allow_minting,
+            allow_blacklisting,
+          )
+        },
       ),
       self.timestamp,
       self.turbo,
@@ -576,6 +593,7 @@ mod tests {
         height: (Some(2), Some(3)),
         amount: Some(4),
         offset: (Some(5), Some(6)),
+        ..default()
       }),
       mints: 11,
       number: 6,
@@ -602,7 +620,14 @@ mod tests {
       12,
       (7, 8),
       Some('a'),
-      Some((Some(1), (Some(2), Some(3)), Some(4), (Some(5), Some(6)))),
+      Some((
+        Some(1),
+        (Some(2), Some(3)),
+        Some(4),
+        (Some(5), Some(6)),
+        false,
+        false,
+      )),
       10,
       true,
     );
@@ -827,6 +852,7 @@ mod tests {
         amount: Some(1000),
         height: (Some(10), Some(20)),
         offset: (Some(0), Some(10)),
+        ..default()
       }),
       block: 10,
       mints: 0,

@@ -419,8 +419,11 @@ inscriptions:
               start: Some(1000),
               end: Some(9000),
             }),
+            allow_minting: None,
+            allow_blacklisting: None,
           }),
           turbo: true,
+          ..default()
         }),
         inscriptions: vec![
           batch::Entry {

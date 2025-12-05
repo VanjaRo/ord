@@ -57,7 +57,10 @@ mod command_builder;
 mod expected;
 mod test_server;
 
+mod authority;
+mod authority_updater;
 mod balances;
+mod blacklisting;
 mod decode;
 mod epochs;
 mod find;
@@ -65,6 +68,7 @@ mod index;
 mod info;
 mod json_api;
 mod list;
+mod minting_extension;
 mod parse;
 mod runes;
 mod server;
@@ -190,6 +194,8 @@ fn etch(core: &mockcore::Handle, ord: &TestServer, rune: Rune) -> Etched {
         rune: SpacedRune { rune, spacers: 0 },
         symbol: '¢',
         turbo: false,
+        allow_minting: None,
+        allow_blacklisting: None,
       }),
       inscriptions: vec![batch::Entry {
         file: Some("inscription.jpeg".into()),
@@ -250,6 +256,8 @@ fn batch(core: &mockcore::Handle, ord: &TestServer, batchfile: batch::File) -> E
     symbol,
     terms,
     turbo,
+    allow_minting: _,
+    allow_blacklisting: _,
   } = batchfile.etching.unwrap();
 
   {
@@ -360,6 +368,7 @@ fn batch(core: &mockcore::Handle, ord: &TestServer, batchfile: batch::File) -> E
   <dd>{tx}</dd>
   <dt>mint</dt>
   {}
+  .*
   <dt>supply</dt>
   <dd>{premine} {symbol}</dd>
   <dt>premine</dt>

@@ -689,6 +689,7 @@ mod tests {
               etching: None,
               mint: None,
               pointer: None,
+              ..Runestone::default()
             }
             .encipher()
           },
@@ -757,6 +758,7 @@ mod tests {
               etching: None,
               mint: None,
               pointer: None,
+              ..Runestone::default()
             }
             .encipher()
           },
@@ -836,6 +838,7 @@ mod tests {
               etching: None,
               mint: None,
               pointer: None,
+              ..Runestone::default()
             }
             .encipher()
           },
@@ -906,6 +909,7 @@ mod tests {
               etching: None,
               mint: None,
               pointer: None,
+              ..Runestone::default()
             }
             .encipher()
           },
@@ -980,6 +984,7 @@ mod tests {
               etching: None,
               mint: None,
               pointer: None,
+              ..Runestone::default()
             }
             .encipher()
           },
@@ -1051,6 +1056,7 @@ mod tests {
               etching: None,
               mint: None,
               pointer: None,
+              ..Runestone::default()
             }
             .encipher()
           },
@@ -1129,6 +1135,7 @@ mod tests {
               etching: None,
               mint: None,
               pointer: None,
+              ..Runestone::default()
             }
             .encipher()
           },
@@ -1209,6 +1216,7 @@ mod tests {
               etching: None,
               mint: None,
               pointer: None,
+              ..Runestone::default()
             }
             .encipher()
           },
@@ -1310,6 +1318,7 @@ mod tests {
               etching: None,
               mint: None,
               pointer: None,
+              ..Runestone::default()
             }
             .encipher()
           },
@@ -1408,6 +1417,8 @@ mod tests {
                 etching: None,
                 mint: None,
                 pointer: None,
+                set_authority: None,
+                authority: None,
               }
               .encipher(),
             }

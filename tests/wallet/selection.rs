@@ -131,8 +131,12 @@ fn mint_does_not_select_inscription() {
           amount: "1000".parse().unwrap(),
           offset: None,
           height: None,
+          allow_minting: None,
+          allow_blacklisting: None,
         }),
         turbo: false,
+        allow_minting: None,
+        allow_blacklisting: None,
       }),
       inscriptions: vec![batch::Entry {
         file: Some("inscription.jpeg".into()),

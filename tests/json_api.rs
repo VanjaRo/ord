@@ -639,6 +639,14 @@ fn get_runes() {
         txid: a.output.reveal,
         index: 0,
       }),
+      authority_flags: Some(ord::subcommand::runes::AuthorityFlags {
+        allow_minting: false,
+        allow_blacklisting: false
+      }),
+      authority: None,
+      supply_extra: None,
+      minter_count: Some(0),
+      blacklist_count: Some(0),
     }
   );
 

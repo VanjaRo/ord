@@ -121,6 +121,8 @@ fn outputs_includes_runes_and_inscriptions() {
           ..default()
         }),
         turbo: false,
+        allow_minting: None,
+        allow_blacklisting: None,
       }),
       inscriptions: vec![batch::Entry {
         file: Some("inscription.jpeg".into()),

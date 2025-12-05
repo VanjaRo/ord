@@ -31,8 +31,12 @@ fn minting_rune_and_fails_if_after_end() {
           }),
           amount: "111.1".parse().unwrap(),
           height: None,
+          allow_minting: None,
+          allow_blacklisting: None,
         }),
         turbo: false,
+        allow_minting: None,
+        allow_blacklisting: None,
       }),
       inscriptions: vec![batch::Entry {
         file: Some("inscription.jpeg".into()),
@@ -122,6 +126,8 @@ fn minting_rune_fails_if_not_mintable() {
         symbol: '¢',
         terms: None,
         turbo: false,
+        allow_minting: None,
+        allow_blacklisting: None,
       }),
       inscriptions: vec![batch::Entry {
         file: Some("inscription.jpeg".into()),
@@ -194,8 +200,12 @@ fn minting_rune_and_then_sending_works() {
           }),
           amount: "21".parse().unwrap(),
           height: None,
+          allow_minting: None,
+          allow_blacklisting: None,
         }),
         turbo: false,
+        allow_minting: None,
+        allow_blacklisting: None,
       }),
       inscriptions: vec![batch::Entry {
         file: Some("inscription.jpeg".into()),
@@ -287,6 +297,8 @@ fn minting_rune_with_destination() {
         supply: "21".parse().unwrap(),
         symbol: '¢',
         turbo: false,
+        allow_minting: None,
+        allow_blacklisting: None,
         terms: Some(batch::Terms {
           cap: 1,
           offset: Some(batch::Range {
@@ -295,6 +307,8 @@ fn minting_rune_with_destination() {
           }),
           amount: "21".parse().unwrap(),
           height: None,
+          allow_minting: None,
+          allow_blacklisting: None,
         }),
       }),
       inscriptions: vec![batch::Entry {
@@ -392,6 +406,8 @@ fn minting_rune_with_postage() {
         supply: "21".parse().unwrap(),
         symbol: '¢',
         turbo: false,
+        allow_minting: None,
+        allow_blacklisting: None,
         terms: Some(batch::Terms {
           cap: 1,
           offset: Some(batch::Range {
@@ -400,6 +416,8 @@ fn minting_rune_with_postage() {
           }),
           amount: "21".parse().unwrap(),
           height: None,
+          allow_minting: None,
+          allow_blacklisting: None,
         }),
       }),
       inscriptions: vec![batch::Entry {
@@ -461,6 +479,8 @@ fn minting_rune_with_postage_dust() {
         supply: "21".parse().unwrap(),
         symbol: '¢',
         turbo: false,
+        allow_minting: None,
+        allow_blacklisting: None,
         terms: Some(batch::Terms {
           cap: 1,
           offset: Some(batch::Range {
@@ -469,6 +489,8 @@ fn minting_rune_with_postage_dust() {
           }),
           amount: "21".parse().unwrap(),
           height: None,
+          allow_minting: None,
+          allow_blacklisting: None,
         }),
       }),
       inscriptions: vec![batch::Entry {
@@ -521,8 +543,12 @@ fn minting_is_allowed_when_mint_begins_next_block() {
           }),
           amount: "111.1".parse().unwrap(),
           height: None,
+          allow_minting: None,
+          allow_blacklisting: None,
         }),
         turbo: false,
+        allow_minting: None,
+        allow_blacklisting: None,
       }),
       inscriptions: vec![batch::Entry {
         file: Some("inscription.jpeg".into()),
